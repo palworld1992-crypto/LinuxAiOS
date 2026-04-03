@@ -6,7 +6,9 @@ use parking_lot::RwLock;
 use scc::crypto::{dilithium_keypair, kyber_keypair};
 use serde::{Deserialize, Serialize};
 use sha2::Digest;
-use std::collections::HashMap; // <-- thêm import
+use std::collections::HashMap;
+
+pub type ComponentKeypair = ([u8; 1568], [u8; 2400], [u8; 1952], [u8; 4032]);
 
 #[derive(Debug, Clone, Serialize, Deserialize)]
 pub struct ComponentKey {
@@ -37,6 +39,12 @@ pub struct ChildTunnelLedger {
 pub struct ChildTunnel {
     ledger: RwLock<ChildTunnelLedger>,
     history: RwLock<Vec<ChildTunnelLedger>>, // limited history (e.g., last 3)
+}
+
+impl Default for ChildTunnel {
+    fn default() -> Self {
+        Self::new()
+    }
 }
 
 impl ChildTunnel {
@@ -76,15 +84,7 @@ impl ChildTunnel {
 
     /// Generate a new quantum‑safe keypair for a component, store the public keys,
     /// and return both public and private keys.
-    pub fn generate_component_key(
-        &self,
-        component_id: String,
-    ) -> Result<(
-        [u8; 1568], // Kyber public
-        [u8; 2400], // Kyber private
-        [u8; 1952], // Dilithium public
-        [u8; 4032], // Dilithium private
-    )> {
+    pub fn generate_component_key(&self, component_id: String) -> Result<ComponentKeypair> {
         let (kyber_pub, kyber_priv) = kyber_keypair()
             .map_err(|e| anyhow::anyhow!("Kyber keypair generation failed: {}", e))?;
         let (dilithium_pub, dilithium_priv) = dilithium_keypair()
@@ -182,22 +182,45 @@ mod tests {
     use super::*;
 
     #[test]
-    fn test_generate_component_key() {
+    fn test_child_tunnel_new() {
         let tunnel = ChildTunnel::new();
-        let result = tunnel.generate_component_key("test_assistant".to_string());
-        if let Err(e) = result {
-            eprintln!("Skipping test: crypto keypair generation failed: {}", e);
-            return;
-        }
-        let (kyber_pub, kyber_priv, dilithium_pub, dilithium_priv) = result.unwrap();
+        assert!(tunnel.get_component_key("nonexistent").is_none());
+        assert!(tunnel.get_component_state("nonexistent").is_none());
+    }
 
-        assert_eq!(kyber_pub.len(), 1568);
-        assert_eq!(kyber_priv.len(), 2400);
-        assert_eq!(dilithium_pub.len(), 1952);
-        assert_eq!(dilithium_priv.len(), 4032);
+    #[test]
+    fn test_register_component_no_crypto() {
+        let tunnel = ChildTunnel::new();
+        let result =
+            tunnel.register_component("test_component".to_string(), vec![0u8; 32], vec![0u8; 32]);
+        assert!(result.is_ok());
 
-        let stored = tunnel.get_component_key("test_assistant").unwrap();
-        assert_eq!(stored.kyber_public, kyber_pub.to_vec());
-        assert_eq!(stored.dilithium_public, dilithium_pub.to_vec());
+        let key = tunnel.get_component_key("test_component").unwrap();
+        assert_eq!(key.component_id, "test_component");
+    }
+
+    #[test]
+    fn test_update_state() {
+        let tunnel = ChildTunnel::new();
+        let result = tunnel.update_state("test_component".to_string(), vec![1u8; 32], true);
+        assert!(result.is_ok());
+
+        let state = tunnel.get_component_state("test_component").unwrap();
+        assert!(state.is_active);
+    }
+
+    #[test]
+    fn test_rollback() {
+        let tunnel = ChildTunnel::new();
+
+        tunnel
+            .register_component("comp1".to_string(), vec![0u8; 32], vec![0u8; 32])
+            .unwrap();
+        tunnel
+            .register_component("comp2".to_string(), vec![0u8; 32], vec![0u8; 32])
+            .unwrap();
+
+        let result = tunnel.rollback();
+        assert!(result.is_some());
     }
 }

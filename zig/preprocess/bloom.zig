@@ -15,14 +15,6 @@ pub export fn bloom_create(
     return null;
 }
 
-fn bloom_hash_idx(filter: *BloomFilter, item: [*]const u8, len: usize, seed: u64) usize {
-    _ = filter;
-    _ = item;
-    _ = len;
-    _ = seed;
-    return 0;
-}
-
 pub export fn bloom_add(
     filter: *BloomFilter,
     item: [*]const u8,

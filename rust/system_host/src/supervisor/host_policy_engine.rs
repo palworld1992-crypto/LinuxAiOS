@@ -13,6 +13,12 @@ pub struct HostPolicyEngine {
     config: PolicyConfig,
 }
 
+impl Default for HostPolicyEngine {
+    fn default() -> Self {
+        Self::new()
+    }
+}
+
 impl HostPolicyEngine {
     pub fn new() -> Self {
         let default = PolicyConfig {

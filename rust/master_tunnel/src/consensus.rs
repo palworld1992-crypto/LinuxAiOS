@@ -141,10 +141,10 @@ impl NetworkClient {
         }
 
         let channel = Channel::from_shared(self.address.clone())
-            .map_err(|e| NetworkError::new(&std::io::Error::new(std::io::ErrorKind::Other, e)))?
+            .map_err(|e| NetworkError::new(&std::io::Error::other(e)))?
             .connect()
             .await
-            .map_err(|e| NetworkError::new(&std::io::Error::new(std::io::ErrorKind::Other, e)))?;
+            .map_err(|e| NetworkError::new(&std::io::Error::other(e)))?;
         Ok(RaftServiceClient::new(channel))
     }
 }
@@ -183,8 +183,7 @@ impl RaftNetwork<RaftTypeConfigImpl> for NetworkClient {
         };
 
         let response = client.append_entries(request).await.map_err(|e| {
-            RPCError::Network(NetworkError::new(&std::io::Error::new(
-                std::io::ErrorKind::Other,
+            RPCError::Network(NetworkError::new(&std::io::Error::other(
                 e,
             )))
         })?;
@@ -233,8 +232,7 @@ impl RaftNetwork<RaftTypeConfigImpl> for NetworkClient {
         };
 
         let response = client.install_snapshot(request).await.map_err(|e| {
-            RPCError::Network(NetworkError::new(&std::io::Error::new(
-                std::io::ErrorKind::Other,
+            RPCError::Network(NetworkError::new(&std::io::Error::other(
                 e,
             )))
         })?;
@@ -265,8 +263,7 @@ impl RaftNetwork<RaftTypeConfigImpl> for NetworkClient {
         };
 
         let response = client.vote(request).await.map_err(|e| {
-            RPCError::Network(NetworkError::new(&std::io::Error::new(
-                std::io::ErrorKind::Other,
+            RPCError::Network(NetworkError::new(&std::io::Error::other(
                 e,
             )))
         })?;

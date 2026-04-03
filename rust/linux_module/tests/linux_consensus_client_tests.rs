@@ -24,8 +24,12 @@ fn test_consensus_client_creation() {
         let (master_kyber_pub, _) = kyber_keypair().unwrap();
         let (_, my_dilithium_priv) = dilithium_keypair().unwrap();
 
-        let _client = ConsensusClient::new(conn_mgr, master_kyber_pub, my_dilithium_priv);
-        // Chỉ cần không panic là được
+        let mut kyber_arr = [0u8; 1568];
+        let mut dilithium_arr = [0u8; 4032];
+        kyber_arr.copy_from_slice(&master_kyber_pub);
+        dilithium_arr.copy_from_slice(&my_dilithium_priv);
+
+        let _client = ConsensusClient::new(conn_mgr, kyber_arr, dilithium_arr);
     });
 }
 
@@ -36,9 +40,13 @@ fn test_submit_vote_no_panic() {
         let (master_kyber_pub, _) = kyber_keypair().unwrap();
         let (_, my_dilithium_priv) = dilithium_keypair().unwrap();
 
-        let client = ConsensusClient::new(conn_mgr, master_kyber_pub, my_dilithium_priv);
+        let mut kyber_arr = [0u8; 1568];
+        let mut dilithium_arr = [0u8; 4032];
+        kyber_arr.copy_from_slice(&master_kyber_pub);
+        dilithium_arr.copy_from_slice(&my_dilithium_priv);
+
+        let client = ConsensusClient::new(conn_mgr, kyber_arr, dilithium_arr);
         client.submit_vote(123, 0.75, RiskLevel::Yellow, 0.85);
-        // Không có gửi thật vì master_tunnel chưa đăng ký, nhưng không panic
     });
 }
 
@@ -51,13 +59,17 @@ fn test_submit_proposal_async() {
             let (master_kyber_pub, _) = kyber_keypair().unwrap();
             let (_, my_dilithium_priv) = dilithium_keypair().unwrap();
 
-            let client = ConsensusClient::new(conn_mgr, master_kyber_pub, my_dilithium_priv);
+            let mut kyber_arr = [0u8; 1568];
+            let mut dilithium_arr = [0u8; 4032];
+            kyber_arr.copy_from_slice(&master_kyber_pub);
+            dilithium_arr.copy_from_slice(&my_dilithium_priv);
+
+            let client = ConsensusClient::new(conn_mgr, kyber_arr, dilithium_arr);
             let proposal_data = b"test proposal".to_vec();
-            // Gửi proposal (sẽ gửi đến master_tunnel, nhưng không có peer nên trả lỗi)
             let result = client
                 .submit_proposal(proposal_data, RiskLevel::Green, 0.9)
                 .await;
-            assert!(result.is_err()); // vì master_tunnel chưa đăng ký
+            assert!(result.is_err());
         });
     });
 }

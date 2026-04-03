@@ -73,6 +73,9 @@ fn main() {
     // --- 3. Linker Search Paths ---
     println!("cargo:rustc-link-search=native={}", lib_dir.display());
 
+    // Thêm đường dẫn cho liboqs
+    println!("cargo:rustc-link-search=native=/usr/lib");
+
     // Tìm thư mục adalib (chứa libgnat.a, libgnarl.a)
     let mut found_adalib = false;
     let mut adalib_path: Option<String> = None;
@@ -112,8 +115,12 @@ fn main() {
 
     // --- 4. Linker flags ---
 
-    // Link tĩnh libscc để chắc chắn có đầy đủ symbol FFI (vd: type_mapper_map_type)
-    println!("cargo:rustc-link-lib=static=scc");
+    // Sử dụng shared library thay vì static vì chỉ có libscc.so
+    if lib_dir.join("libscc.so").exists() {
+        println!("cargo:rustc-link-lib=dylib=scc");
+    } else if lib_dir.join("libscc.a").exists() {
+        println!("cargo:rustc-link-lib=static=scc");
+    }
 
     // Thư viện oqs (mật mã) link tĩnh
     println!("cargo:rustc-link-lib=static=oqs");

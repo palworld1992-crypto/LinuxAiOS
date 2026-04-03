@@ -54,16 +54,20 @@ impl ReputationDatabase {
             })?;
 
             for row in rows {
-                if let Ok((rec, saved_hmac)) = row {
-                    // Kiểm tra HMAC để đảm bảo dữ liệu DB không bị sửa đổi trái phép
-                    if Self::compute_hmac_static(&rec, &hmac_key) == saved_hmac {
-                        cache.insert(rec.supervisor_id.clone(), rec);
-                    } else {
-                        warn!(
-                            "Phát hiện dữ liệu bị can thiệp cho supervisor: {}",
-                            rec.supervisor_id
-                        );
+                let (rec, saved_hmac) = match row {
+                    Ok(r) => r,
+                    Err(e) => {
+                        error!("Lỗi đọc row từ SQLite: {}", e);
+                        continue;
                     }
+                };
+                if Self::compute_hmac_static(&rec, &hmac_key) == saved_hmac {
+                    cache.insert(rec.supervisor_id.clone(), rec);
+                } else {
+                    warn!(
+                        "Phát hiện dữ liệu bị can thiệp cho supervisor: {}",
+                        rec.supervisor_id
+                    );
                 }
             }
         }
@@ -172,10 +176,10 @@ impl ReputationDatabase {
     fn compute_hmac_static(rec: &Reputation, hmac_key: &[u8; 32]) -> Vec<u8> {
         let mut hasher = Sha256::new();
         hasher.update(rec.supervisor_id.as_bytes());
-        hasher.update(&rec.score.to_le_bytes());
-        hasher.update(&rec.last_update.to_le_bytes());
-        hasher.update(&rec.total_votes.to_le_bytes());
-        hasher.update(&rec.successful_votes.to_le_bytes());
+        hasher.update(rec.score.to_le_bytes());
+        hasher.update(rec.last_update.to_le_bytes());
+        hasher.update(rec.total_votes.to_le_bytes());
+        hasher.update(rec.successful_votes.to_le_bytes());
         hasher.update(hmac_key);
         hasher.finalize().to_vec()
     }

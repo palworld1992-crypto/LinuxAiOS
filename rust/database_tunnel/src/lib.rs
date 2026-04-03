@@ -10,7 +10,6 @@ use parking_lot::RwLock;
 use rusqlite::{params, Connection};
 use serde::{Deserialize, Serialize};
 use sha2::{Digest, Sha256};
-use std::sync::Arc;
 use std::thread;
 use tracing::{error, info};
 
@@ -109,10 +108,10 @@ impl DatabaseTunnel {
 
     fn hash_record(&self, record: &ChangeRecord) -> Vec<u8> {
         let mut hasher = Sha256::new();
-        hasher.update(&record.id.to_le_bytes());
+        hasher.update(record.id.to_le_bytes());
         hasher.update(record.operation.as_bytes());
         hasher.update(record.table.as_bytes());
-        hasher.update(&record.row_id.to_le_bytes());
+        hasher.update(record.row_id.to_le_bytes());
         hasher.update(&record.old_hash);
         hasher.update(&record.new_hash);
         hasher.update(&record.signature);

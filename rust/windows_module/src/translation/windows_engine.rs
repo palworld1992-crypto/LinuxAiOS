@@ -59,8 +59,7 @@ pub struct ApiStats {
 impl WindowsEngine {
     pub fn new(cache_size: usize, shm_size_mb: Option<usize>) -> anyhow::Result<Self> {
         let cache = LruCache::new(
-            std::num::NonZeroUsize::new(cache_size.max(1))
-                .context("cache_size must be > 0")?
+            std::num::NonZeroUsize::new(cache_size.max(1)).context("cache_size must be > 0")?,
         );
 
         let (shm, shm_path) = if let Some(size_mb) = shm_size_mb {
@@ -134,7 +133,7 @@ impl WindowsEngine {
         entry.avg_latency_ms =
             (entry.avg_latency_ms * (total - 1) as f64 + latency_ms) / total as f64;
 
-        if total % 100 == 0 {
+        if total.is_multiple_of(100) {
             entry.calls_per_second = total / 60;
         }
 
@@ -210,7 +209,8 @@ mod tests {
 
     #[test]
     fn test_engine_creation() {
-        let engine = WindowsEngine::new(1000, None).expect("WindowsEngine::new should succeed with valid size");
+        let engine = WindowsEngine::new(1000, None)
+            .expect("WindowsEngine::new should succeed with valid size");
         assert!(engine.shared_memory.is_none());
     }
 

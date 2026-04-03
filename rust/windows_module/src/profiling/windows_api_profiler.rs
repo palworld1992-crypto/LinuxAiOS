@@ -29,6 +29,12 @@ pub struct ApiStats {
     pub max_latency_ms: AtomicU64,
 }
 
+impl Default for ApiStats {
+    fn default() -> Self {
+        Self::new()
+    }
+}
+
 impl ApiStats {
     pub fn new() -> Self {
         Self {
@@ -96,7 +102,7 @@ impl ApiProfiler {
 
         let stats = stats_map
             .entry(api_name.to_string())
-            .or_insert_with(ApiStats::new);
+            .or_default();
 
         let total = stats.total_calls.fetch_add(1, Ordering::Relaxed) + 1;
 

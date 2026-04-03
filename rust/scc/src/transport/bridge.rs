@@ -113,6 +113,10 @@ impl TransportBridge {
         self.routes.len()
     }
 
+    pub fn is_empty(&self) -> bool {
+        self.routes.is_empty()
+    }
+
     pub fn get_stats(&self) -> BridgeStats {
         BridgeStats {
             total_signals: self.total_signals.load(Ordering::Acquire),

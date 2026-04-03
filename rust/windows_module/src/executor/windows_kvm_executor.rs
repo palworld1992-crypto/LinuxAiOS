@@ -100,7 +100,7 @@ impl KvmExecutor {
 
         let cfg = self.config.read().clone();
 
-        if !cfg.kernel.is_some() && cfg.disk_image.is_none() {
+        if cfg.kernel.is_none() && cfg.disk_image.is_none() {
             return Err(KvmError::NotAvailable(
                 "No kernel or disk image provided".to_string(),
             ));

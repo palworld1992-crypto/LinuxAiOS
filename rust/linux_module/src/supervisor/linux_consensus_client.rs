@@ -74,9 +74,6 @@ impl ConsensusClient {
     }
 
     /// Submit a vote (existing, kept for compatibility)
-    // ... (phần đầu file giữ nguyên)
-
-    /// Submit a vote (existing, kept for compatibility)
     pub fn submit_vote(
         &self,
         proposal_id: u64,

@@ -24,6 +24,7 @@ fn test_record_and_last_health() {
             module_id: "component1".to_string(),
             timestamp: current_timestamp_ms(),
             status: HealthStatus::Healthy,
+            potential: 1.0,
             details: vec![],
         };
         tunnel.record_health(record.clone()).unwrap();
@@ -46,6 +47,7 @@ fn test_health_history() {
                 } else {
                     HealthStatus::Degraded
                 },
+                potential: 1.0,
                 details: vec![],
             };
             tunnel.record_health(record).unwrap();
@@ -66,6 +68,7 @@ fn test_rollback() {
             module_id: "comp".to_string(),
             timestamp: current_timestamp_ms(),
             status: HealthStatus::Healthy,
+            potential: 1.0,
             details: vec![],
         };
         tunnel.record_health(record1).unwrap();
@@ -73,6 +76,7 @@ fn test_rollback() {
             module_id: "comp".to_string(),
             timestamp: current_timestamp_ms(),
             status: HealthStatus::Degraded,
+            potential: 0.5,
             details: vec![],
         };
         tunnel.record_health(record2).unwrap();

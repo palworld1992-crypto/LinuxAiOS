@@ -1,7 +1,7 @@
 //! Windows Main – quản lý executor, hybrid library, translation engine.
 
-use crate::windows_main::windows_degraded_mode::WindowsDegradedMode;
-use crate::windows_main::windows_local_failover::WindowsLocalFailover;
+use crate::windows::windows_degraded_mode::WindowsDegradedMode;
+use crate::windows::windows_local_failover::WindowsLocalFailover;
 use common::health_tunnel::{HealthRecord, HealthTunnel};
 use anyhow::Result;
 use scc::ConnectionManager;

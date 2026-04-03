@@ -9,6 +9,12 @@ pub struct HostDownloadManager {
     download_dir: PathBuf,
 }
 
+impl Default for HostDownloadManager {
+    fn default() -> Self {
+        Self::new()
+    }
+}
+
 impl HostDownloadManager {
     pub fn new() -> Self {
         Self {
@@ -32,7 +38,7 @@ impl HostDownloadManager {
                 ));
             }
         }
-        let filename = url.split('/').last().unwrap_or("download");
+        let filename = url.split('/').next_back().unwrap_or("download");
         let path = self.download_dir.join(filename);
         std::fs::write(&path, bytes)?;
         Ok(path)

@@ -14,6 +14,12 @@ pub struct WindowsPolicyEngine {
     config: PolicyConfig,
 }
 
+impl Default for WindowsPolicyEngine {
+    fn default() -> Self {
+        Self::new()
+    }
+}
+
 impl WindowsPolicyEngine {
     pub fn new() -> Self {
         let default = PolicyConfig {

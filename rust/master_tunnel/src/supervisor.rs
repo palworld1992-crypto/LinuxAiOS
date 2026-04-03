@@ -32,6 +32,12 @@ pub struct SupervisorRegistry {
     next_id: RwLock<u64>,
 }
 
+impl Default for SupervisorRegistry {
+    fn default() -> Self {
+        Self::new()
+    }
+}
+
 impl SupervisorRegistry {
     pub fn new() -> Self {
         Self {

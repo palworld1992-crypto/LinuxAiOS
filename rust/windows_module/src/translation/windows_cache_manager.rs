@@ -35,14 +35,9 @@ pub struct WindowsCacheManager {
 }
 
 impl WindowsCacheManager {
-    pub fn new(
-        max_entries: usize,
-        max_memory_mb: usize,
-        use_shm: bool,
-    ) -> anyhow::Result<Self> {
+    pub fn new(max_entries: usize, max_memory_mb: usize, use_shm: bool) -> anyhow::Result<Self> {
         let cache = LruCache::new(
-            std::num::NonZeroUsize::new(max_entries.max(1))
-                .context("max_entries must be > 0")?
+            std::num::NonZeroUsize::new(max_entries.max(1)).context("max_entries must be > 0")?,
         );
 
         let (shm, path) = if use_shm && max_memory_mb > 0 {
@@ -52,6 +47,7 @@ impl WindowsCacheManager {
                 .read(true)
                 .write(true)
                 .create(true)
+                .truncate(true)
                 .open(&path)?;
 
             file.set_len((max_memory_mb * 1024 * 1024) as u64)?;
@@ -250,7 +246,8 @@ mod tests {
 
     #[test]
     fn test_lru_eviction() {
-        let cache = WindowsCacheManager::new(2, 1, false).expect("cache creation with capacity 2 must succeed");
+        let cache = WindowsCacheManager::new(2, 1, false)
+            .expect("cache creation with capacity 2 must succeed");
 
         cache.put("key1".to_string(), vec![1], false);
         cache.put("key2".to_string(), vec![2], false);

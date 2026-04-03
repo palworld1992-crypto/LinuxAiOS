@@ -7,6 +7,12 @@ pub struct SihDegradedMode {
     active: RwLock<bool>,
 }
 
+impl Default for SihDegradedMode {
+    fn default() -> Self {
+        Self::new()
+    }
+}
+
 impl SihDegradedMode {
     pub fn new() -> Self {
         Self {

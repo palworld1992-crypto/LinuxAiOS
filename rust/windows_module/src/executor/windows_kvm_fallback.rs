@@ -129,7 +129,7 @@ impl KvmFallback {
         let mut sys = System::new();
         sys.refresh_processes();
 
-        for (_pid, process) in sys.processes() {
+        for process in sys.processes().values() {
             let name = process.name();
             if name.contains("nvidia") || name.contains("amd") || name.contains("radeon") {
                 return Ok((true, None, Some(name.to_string())));

@@ -9,6 +9,12 @@ pub struct ConnectionManager {
     _inbound: std::sync::Arc<RingBuffer<Vec<u8>>>,
 }
 
+impl Default for ConnectionManager {
+    fn default() -> Self {
+        Self::new()
+    }
+}
+
 impl ConnectionManager {
     pub fn new() -> Self {
         Self {

@@ -17,6 +17,7 @@ configuration project Default is
 
    package Compiler is
       for Language_Kind ("ada") use "unit_based";
+      for Driver ("Ada") use "gnatgcc";
    end Compiler;
 
    package Naming is

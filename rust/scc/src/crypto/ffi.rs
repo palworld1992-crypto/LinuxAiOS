@@ -1,4 +1,5 @@
 extern "C" {
+    #[link_name = "crypto_engine__aes_gcm_encrypt"]
     pub fn crypto_aes_gcm_encrypt(
         key: *const u8,
         plaintext: *const u8,
@@ -9,6 +10,7 @@ extern "C" {
         ciphertext_len: *mut usize,
     ) -> i32;
 
+    #[link_name = "crypto_engine__aes_gcm_decrypt"]
     pub fn crypto_aes_gcm_decrypt(
         key: *const u8,
         ciphertext: *const u8,
@@ -19,6 +21,7 @@ extern "C" {
         plaintext_len: *mut usize,
     ) -> i32;
 
+    #[link_name = "crypto_engine__hmac_sha256"]
     pub fn crypto_hmac_sha256(
         key: *const u8,
         data: *const u8,
@@ -26,22 +29,27 @@ extern "C" {
         mac_out: *mut u8,
     ) -> i32;
 
+    #[link_name = "crypto_engine__kyber_keypair"]
     pub fn crypto_kyber_keypair(public_key: *mut u8, secret_key: *mut u8) -> i32;
 
+    #[link_name = "crypto_engine__kyber_encaps"]
     pub fn crypto_kyber_encaps(
         public_key: *const u8,
         ciphertext: *mut u8,
         shared_secret: *mut u8,
     ) -> i32;
 
+    #[link_name = "crypto_engine__kyber_decaps"]
     pub fn crypto_kyber_decaps(
         secret_key: *const u8,
         ciphertext: *const u8,
         shared_secret: *mut u8,
     ) -> i32;
 
+    #[link_name = "crypto_engine__dilithium_keypair"]
     pub fn crypto_dilithium_keypair(public_key: *mut u8, secret_key: *mut u8) -> i32;
 
+    #[link_name = "crypto_engine__dilithium_sign"]
     pub fn crypto_dilithium_sign(
         secret_key: *const u8,
         message: *const u8,
@@ -50,6 +58,7 @@ extern "C" {
         signature_len: *mut usize,
     ) -> i32;
 
+    #[link_name = "crypto_engine__dilithium_verify"]
     pub fn crypto_dilithium_verify(
         public_key: *const u8,
         message: *const u8,
@@ -58,6 +67,7 @@ extern "C" {
         signature_len: usize,
     ) -> i32;
 
+    #[link_name = "crypto_engine__crypto_free_buffer"]
     pub fn crypto_free_buffer(ptr: *mut u8);
 }
 
@@ -74,11 +84,7 @@ pub enum CryptoError {
 }
 
 pub fn is_crypto_available() -> bool {
-    unsafe {
-        let mut pk = [0u8; 1568];
-        let mut sk = [0u8; 2400];
-        crypto_kyber_keypair(pk.as_mut_ptr(), sk.as_mut_ptr()) == 0
-    }
+    std::path::Path::new("/root/aios/spark/lib/libscc.so").exists()
 }
 
 pub fn kyber_keypair() -> Result<(Vec<u8>, Vec<u8>), CryptoError> {

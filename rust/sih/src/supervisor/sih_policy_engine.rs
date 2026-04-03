@@ -13,6 +13,12 @@ pub struct SihPolicyEngine {
     config: PolicyConfig,
 }
 
+impl Default for SihPolicyEngine {
+    fn default() -> Self {
+        Self::new()
+    }
+}
+
 impl SihPolicyEngine {
     pub fn new() -> Self {
         let default = PolicyConfig {

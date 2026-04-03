@@ -78,7 +78,7 @@ impl ParallelEncapsulator {
         aad: &[u8],
         num_chunks: usize,
     ) -> Result<(Vec<u8>, u64)> {
-        let chunk_size = (payload.len() + num_chunks - 1) / num_chunks;
+        let chunk_size = payload.len().div_ceil(num_chunks);
         let chunks: Vec<&[u8]> = payload.chunks(chunk_size).collect();
         let cipher = Aes256Gcm::new(Key::<Aes256Gcm>::from_slice(key));
 
@@ -95,7 +95,7 @@ impl ParallelEncapsulator {
                 }
                 let nonce = GenericArray::from_slice(&nonce_bytes);
                 let ciphertext = cipher
-                    .encrypt(nonce, Payload { msg: *chunk, aad })
+                    .encrypt(nonce, Payload { msg: chunk, aad })
                     .map_err(|e| anyhow!("parallel AES-GCM encryption failed: {}", e))?;
 
                 // SIMD alignment: căn lề 64-byte cho mỗi chunk

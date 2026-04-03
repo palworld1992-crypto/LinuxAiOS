@@ -5,6 +5,12 @@ use tracing::info;
 
 pub struct HostLocalFailover;
 
+impl Default for HostLocalFailover {
+    fn default() -> Self {
+        Self::new()
+    }
+}
+
 impl HostLocalFailover {
     pub fn new() -> Self {
         Self

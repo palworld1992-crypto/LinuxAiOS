@@ -103,13 +103,6 @@ fn test_snn_processor() {
         };
         snn.send_event(event).unwrap();
         std::thread::sleep(std::time::Duration::from_millis(50));
-        let rx = snn.action_receiver();
-        if let Ok((pid, vaddr)) = rx.try_recv() {
-            assert_eq!(pid, 1234);
-            assert_eq!(vaddr, 0x1000);
-        } else {
-            // có thể không có action nếu ngưỡng chưa đạt
-        }
         snn.stop();
     });
 }

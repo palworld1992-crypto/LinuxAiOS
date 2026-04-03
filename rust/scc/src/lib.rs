@@ -12,8 +12,6 @@ pub use connection::ConnectionManager;
 pub use token::CapabilityToken;
 pub use transport::TransportBridge;
 
-#[cfg(not(test))]
-use libc;
 use std::sync::Once;
 
 extern "C" {

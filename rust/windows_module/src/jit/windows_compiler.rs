@@ -62,6 +62,7 @@ impl JitCompiler {
                 .read(true)
                 .write(true)
                 .create(true)
+                .truncate(true)
                 .open(&path)
                 .map_err(|e| JitError::MmapError(e.to_string()))?;
 
@@ -166,7 +167,7 @@ impl JitCompiler {
             &[0x0f, 0x01, 0xf9], // rdtscp
         ];
         for window in code.windows(3) {
-            if dangerous.iter().any(|d| window.starts_with(*d)) {
+            if dangerous.iter().any(|d| window.starts_with(d)) {
                 warn!("Potentially dangerous instruction found in JIT code");
                 return false;
             }

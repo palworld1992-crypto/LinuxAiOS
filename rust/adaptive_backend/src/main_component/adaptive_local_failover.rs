@@ -5,6 +5,12 @@ use tracing::info;
 
 pub struct AdaptiveLocalFailover;
 
+impl Default for AdaptiveLocalFailover {
+    fn default() -> Self {
+        Self::new()
+    }
+}
+
 impl AdaptiveLocalFailover {
     pub fn new() -> Self {
         Self

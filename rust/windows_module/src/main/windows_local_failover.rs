@@ -7,6 +7,12 @@ pub struct WindowsLocalFailover {
     // có thể lưu trạng thái
 }
 
+impl Default for WindowsLocalFailover {
+    fn default() -> Self {
+        Self::new()
+    }
+}
+
 impl WindowsLocalFailover {
     pub fn new() -> Self {
         Self {}

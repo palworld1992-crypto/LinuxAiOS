@@ -6,7 +6,7 @@ use libfuzzer_sys::fuzz_target;
 fn make_component_id(data: &[u8]) -> String {
     let s = String::from_utf8_lossy(data);
     if s.len() > 64 {
-        s[..64].to_string()
+        s.chars().take(64).collect()
     } else {
         s.to_string()
     }
@@ -29,7 +29,11 @@ fuzz_target!(|data: &[u8]| {
     let _ = tunnel.get_component_state(&component_id);
 
     // Try to update state
-    let _ = tunnel.update_state(component_id.clone(), data.to_vec(), data.len() % 2 == 0);
+    let _ = tunnel.update_state(
+        component_id.clone(),
+        data.to_vec(),
+        data.len().is_multiple_of(2),
+    );
 
     // Try rollback
     let _ = tunnel.rollback();

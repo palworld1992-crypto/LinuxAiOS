@@ -50,7 +50,7 @@ impl Default for DxvkConfig {
 }
 
 impl DxvkVersion {
-    pub fn from_str(s: &str) -> Self {
+    pub fn parse(s: &str) -> Self {
         if s.contains("2.1") {
             DxvkVersion::Dxvk2_1
         } else if s.contains("2.0") {
@@ -226,8 +226,8 @@ mod tests {
 
     #[test]
     fn test_dxvk_version_parsing() {
-        assert_eq!(DxvkVersion::from_str("dxvk-2.1"), DxvkVersion::Dxvk2_1);
-        assert_eq!(DxvkVersion::from_str("dxvk-1.10"), DxvkVersion::Dxvk1_10);
-        assert_eq!(DxvkVersion::from_str("unknown"), DxvkVersion::Unknown);
+        assert_eq!(DxvkVersion::parse("dxvk-2.1"), DxvkVersion::Dxvk2_1);
+        assert_eq!(DxvkVersion::parse("dxvk-1.10"), DxvkVersion::Dxvk1_10);
+        assert_eq!(DxvkVersion::parse("unknown"), DxvkVersion::Unknown);
     }
 }

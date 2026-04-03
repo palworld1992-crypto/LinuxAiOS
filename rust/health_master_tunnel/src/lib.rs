@@ -5,7 +5,7 @@ use common::utils::current_timestamp_ms;
 use parking_lot::RwLock;
 use serde::{Deserialize, Serialize};
 use sha2::Digest;
-use std::collections::HashMap; // <-- thêm import
+use std::collections::HashMap;
 
 #[derive(Debug, Clone, Serialize, Deserialize)]
 pub struct SupervisorHealth {
@@ -29,6 +29,12 @@ pub struct HealthSnapshot {
 pub struct HealthMasterTunnel {
     snapshots: RwLock<Vec<HealthSnapshot>>, // latest 3 snapshots (index 0 = current, 1 = previous, 2 = default)
     default: RwLock<Option<HealthSnapshot>>,
+}
+
+impl Default for HealthMasterTunnel {
+    fn default() -> Self {
+        Self::new()
+    }
 }
 
 impl HealthMasterTunnel {
@@ -83,6 +89,11 @@ impl HealthMasterTunnel {
         *self.default.write() = Some(snapshot);
     }
 
+    /// Get the default snapshot.
+    pub fn default_snapshot(&self) -> Option<HealthSnapshot> {
+        self.default.read().clone()
+    }
+
     /// Get the current snapshot (latest).
     pub fn current(&self) -> Option<HealthSnapshot> {
         self.snapshots.read().first().cloned()
@@ -93,21 +104,86 @@ impl HealthMasterTunnel {
         self.snapshots.read().get(1).cloned()
     }
 
-    /// Get the default snapshot.
-    pub fn default_snapshot(&self) -> Option<HealthSnapshot> {
-        self.default.read().clone()
-    }
-
     /// Rollback to the previous snapshot (if exists).
     pub fn rollback(&self) -> Option<HealthSnapshot> {
         let mut snapshots = self.snapshots.write();
         if snapshots.len() >= 2 {
             let prev = snapshots[1].clone();
-            // Move previous to current, keep default
             snapshots.remove(0);
             Some(prev)
         } else {
             None
         }
+    }
+}
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+
+    #[test]
+    fn test_health_master_tunnel_new() {
+        let tunnel = HealthMasterTunnel::new();
+        assert!(tunnel.current().is_none());
+    }
+
+    #[test]
+    fn test_record_snapshot() {
+        let tunnel = HealthMasterTunnel::new();
+        let mut supervisors = HashMap::new();
+        supervisors.insert(
+            1,
+            SupervisorHealth {
+                supervisor_id: 1,
+                state: vec![1, 2, 3],
+                root_hash: vec![0u8; 32],
+                timestamp: 1000,
+            },
+        );
+        assert!(tunnel.record_snapshot(supervisors).is_ok());
+
+        let current = tunnel.current().unwrap();
+        assert_eq!(current.supervisors.len(), 1);
+    }
+
+    #[test]
+    fn test_rollback() {
+        let tunnel = HealthMasterTunnel::new();
+
+        for i in 0..3 {
+            let mut supervisors = HashMap::new();
+            supervisors.insert(
+                1,
+                SupervisorHealth {
+                    supervisor_id: 1,
+                    state: vec![i],
+                    root_hash: vec![0u8; 32],
+                    timestamp: 1000 + i as u64,
+                },
+            );
+            tunnel.record_snapshot(supervisors).unwrap();
+        }
+
+        let _before = tunnel.current().unwrap();
+        let result = tunnel.rollback();
+        assert!(result.is_some());
+    }
+
+    #[test]
+    fn test_default_snapshot() {
+        let tunnel = HealthMasterTunnel::new();
+        let snapshot = HealthSnapshot {
+            version: 1,
+            supervisors: HashMap::new(),
+            risk_level: Some(0),
+            risk_signature: None,
+            timestamp: 0,
+            prev_hash: vec![0u8; 32],
+            hash: vec![0u8; 32],
+        };
+        tunnel.set_default(snapshot.clone());
+
+        let default = tunnel.default_snapshot().unwrap();
+        assert_eq!(default.risk_level, Some(0));
     }
 }

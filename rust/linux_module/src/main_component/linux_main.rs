@@ -12,7 +12,7 @@ use common::health_tunnel::{HealthRecord, HealthStatus, HealthTunnel};
 use dashmap::DashMap;
 use scc::ConnectionManager;
 use std::collections::VecDeque;
-use std::path::PathBuf;
+use std::path::{Path, PathBuf};
 use std::sync::Arc;
 use sysinfo::{CpuExt, SystemExt};
 use tokio::time::{interval, Duration};
@@ -114,7 +114,7 @@ impl LinuxMain {
         }
     }
 
-    pub fn start_ebpf_coldpage_tracker(&mut self, obj_path: &PathBuf) -> anyhow::Result<()> {
+    pub fn start_ebpf_coldpage_tracker(&mut self, obj_path: &Path) -> anyhow::Result<()> {
         self.memory_tiering.start_coldpage_tracker(obj_path)?;
         self.memory_tiering.run_background_tracker();
         Ok(())

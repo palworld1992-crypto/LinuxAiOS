@@ -8,6 +8,12 @@ pub struct HardwareMonitor {
     shm: Option<SharedMemory>,
 }
 
+impl Default for HardwareMonitor {
+    fn default() -> Self {
+        Self::new()
+    }
+}
+
 impl HardwareMonitor {
     pub fn new() -> Self {
         Self {

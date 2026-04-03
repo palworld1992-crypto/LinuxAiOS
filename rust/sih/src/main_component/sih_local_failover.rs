@@ -5,6 +5,12 @@ use tracing::info;
 
 pub struct SihLocalFailover;
 
+impl Default for SihLocalFailover {
+    fn default() -> Self {
+        Self::new()
+    }
+}
+
 impl SihLocalFailover {
     pub fn new() -> Self {
         Self

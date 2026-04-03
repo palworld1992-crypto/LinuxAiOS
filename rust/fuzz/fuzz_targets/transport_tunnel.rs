@@ -19,7 +19,7 @@ fuzz_target!(|data: &[u8]| {
     }
 
     // Fuzz Intent Token validation
-    let signal = data.get(0).copied().unwrap_or(0);
+    let signal = data.first().copied().unwrap_or(0);
     let urgency = data.get(1).copied().unwrap_or(0);
     let token = make_token(signal, urgency);
     let _ = validate_token(&token);
@@ -32,14 +32,11 @@ fuzz_target!(|data: &[u8]| {
 });
 
 fn validate_token(token: &AiosIntentToken) -> bool {
-    // signal_type is u8, so > 1 comparison is always true for values 2-255
-    // Only invalid values are > 1 AND not equal to 255 (which is impossible for u8)
-    if token.signal_type > 1 && token.signal_type != u8::MAX {
+    // signal_type is u8, so only invalid if > 1 and not 255 (which is possible)
+    if token.signal_type > 1 && token.signal_type != 255 {
         return false;
     }
-    // urgency is u8, so > 255 is always false - this is a type limit check
-    if token.urgency > u8::MAX {
-        return false;
-    }
+    // urgency is u8, so comparison > u8::MAX is always false - remove it
+    // Instead, just check if urgency is within expected range (e.g., 0-255 always true)
     true
 }

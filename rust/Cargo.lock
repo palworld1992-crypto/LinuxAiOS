@@ -961,6 +961,24 @@ dependencies = [
 ]
 
 [[package]]
+name = "database_tunnel"
+version = "0.1.0"
+dependencies = [
+ "anyhow",
+ "bincode",
+ "common",
+ "crossbeam",
+ "dashmap",
+ "parking_lot",
+ "rusqlite",
+ "scc",
+ "serde",
+ "serde_json",
+ "sha2",
+ "tracing",
+]
+
+[[package]]
 name = "derive_arbitrary"
 version = "1.4.2"
 source = "registry+https://github.com/rust-lang/crates.io-index"
@@ -3349,6 +3367,7 @@ dependencies = [
  "dashmap",
  "libc",
  "memmap2",
+ "once_cell",
  "parking_lot",
  "rand 0.8.5",
  "serde",

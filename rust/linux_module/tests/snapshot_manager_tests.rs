@@ -24,8 +24,11 @@ fn setup_snapshot_manager() -> Option<SnapshotManager> {
             return None;
         }
     };
-    let snap_mgr = SnapshotManager::new();
-    snap_mgr.set_signing_key(priv_key);
+    let mut key_array = [0u8; 4032];
+    key_array.copy_from_slice(&priv_key);
+    let temp_dir = tempdir().unwrap();
+    let snap_mgr = SnapshotManager::new(temp_dir.path().to_path_buf(), 10);
+    snap_mgr.set_signing_key(key_array);
     Some(snap_mgr)
 }
 

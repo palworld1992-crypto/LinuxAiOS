@@ -14,6 +14,12 @@ pub struct ModeSelector {
     current_mode: parking_lot::RwLock<ExecutionMode>,
 }
 
+impl Default for ModeSelector {
+    fn default() -> Self {
+        Self::new()
+    }
+}
+
 impl ModeSelector {
     pub fn new() -> Self {
         Self {

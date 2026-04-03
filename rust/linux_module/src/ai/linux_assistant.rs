@@ -39,11 +39,13 @@ pub struct LinuxAssistant {
     health_tunnel: parking_lot::Mutex<Option<Arc<dyn HealthTunnel + Send + Sync>>>,
     config: AssistantConfig,
 
-    // Các sub-module
     lnn: parking_lot::RwLock<Option<LinuxLnnPredictor>>,
     snn: parking_lot::RwLock<Option<LinuxSnnProcessor>>,
     rl: parking_lot::RwLock<Option<LinuxRlPolicy>>,
 }
+
+unsafe impl Send for LinuxAssistant {}
+unsafe impl Sync for LinuxAssistant {}
 
 impl LinuxAssistant {
     pub fn new(

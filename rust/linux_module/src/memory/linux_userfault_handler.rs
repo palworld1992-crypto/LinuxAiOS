@@ -39,6 +39,12 @@ pub struct UserfaultHandler {
     tensor_pool: Option<Arc<RwLock<TensorPool>>>,
 }
 
+impl Default for UserfaultHandler {
+    fn default() -> Self {
+        Self::new()
+    }
+}
+
 impl UserfaultHandler {
     pub fn new() -> Self {
         Self {

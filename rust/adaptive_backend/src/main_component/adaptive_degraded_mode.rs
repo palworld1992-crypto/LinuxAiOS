@@ -7,6 +7,12 @@ pub struct AdaptiveDegradedMode {
     active: RwLock<bool>,
 }
 
+impl Default for AdaptiveDegradedMode {
+    fn default() -> Self {
+        Self::new()
+    }
+}
+
 impl AdaptiveDegradedMode {
     pub fn new() -> Self {
         Self {

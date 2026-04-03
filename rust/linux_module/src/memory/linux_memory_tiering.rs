@@ -6,7 +6,7 @@ use common::shm::SharedMemory;
 use dashmap::DashMap;
 use scc::ConnectionManager;
 use std::ffi::CString;
-use std::path::PathBuf;
+use std::path::Path;
 use std::sync::atomic::{AtomicBool, Ordering};
 use std::sync::Arc;
 use std::thread;
@@ -99,7 +99,7 @@ impl MemoryTieringManager {
     }
 
     /// Khởi động eBPF cold page tracker
-    pub fn start_coldpage_tracker(&mut self, obj_path: &PathBuf) -> anyhow::Result<()> {
+    pub fn start_coldpage_tracker(&mut self, obj_path: &Path) -> anyhow::Result<()> {
         let obj_cstr = CString::new(obj_path.to_str().ok_or_else(|| anyhow!("invalid path"))?)?;
         let prog_fd = unsafe { zig_bindings::zig_load_coldpage_program(obj_cstr.as_ptr()) };
         if prog_fd < 0 {

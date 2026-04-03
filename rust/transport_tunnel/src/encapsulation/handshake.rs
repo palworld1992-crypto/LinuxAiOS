@@ -96,5 +96,5 @@ pub fn server_handshake(
     let shared_secret = kyber_decaps(my_kyber_priv, &ciphertext_arr)
         .map_err(|e| anyhow!("Kyber decaps failed: {}", e))?;
 
-    Ok(SessionKey::from_master_secret(&shared_secret)?)
+    SessionKey::from_master_secret(&shared_secret)
 }

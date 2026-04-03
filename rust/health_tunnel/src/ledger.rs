@@ -15,6 +15,12 @@ pub struct HealthTunnelLedger {
     snapshots: RwLock<VecDeque<HealthSnapshot>>, // index 0 = default, 1 = previous, 2 = current
 }
 
+impl Default for HealthTunnelLedger {
+    fn default() -> Self {
+        Self::new()
+    }
+}
+
 impl HealthTunnelLedger {
     pub fn new() -> Self {
         Self {

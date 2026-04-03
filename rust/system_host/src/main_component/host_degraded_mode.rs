@@ -7,6 +7,12 @@ pub struct HostDegradedMode {
     active: RwLock<bool>,
 }
 
+impl Default for HostDegradedMode {
+    fn default() -> Self {
+        Self::new()
+    }
+}
+
 impl HostDegradedMode {
     pub fn new() -> Self {
         Self {

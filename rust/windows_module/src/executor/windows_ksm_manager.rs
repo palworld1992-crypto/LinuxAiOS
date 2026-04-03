@@ -113,6 +113,12 @@ impl KsmManager {
             return Err(KsmError::SysfsError("sleep_millis cannot be 0".to_string()));
         }
 
+        if !self.is_writable("sleep_millis") {
+            return Err(KsmError::SysfsError(
+                "KSM sysfs not writable (not running as root or KSM not enabled)".to_string(),
+            ));
+        }
+
         self.write_sysfs("sleep_millis", &millis.to_string())?;
         *self.sleep_millis.write() = millis;
         debug!("KSM sleep_millis set to {} ms", millis);
@@ -157,9 +163,17 @@ impl KsmManager {
             .map_err(|e| KsmError::SysfsError(format!("Failed to write {}: {}", path, e)))
     }
 
+    fn is_writable(&self, file: &str) -> bool {
+        let path = format!("/sys/kernel/mm/ksm/{}", file);
+        std::path::Path::new(&path).exists()
+            && std::fs::metadata(&path)
+                .map(|m| !m.permissions().readonly())
+                .unwrap_or(false)
+    }
+
     fn read_sysfs_u64(&self, file: &str) -> Result<u64, KsmError> {
         let path = format!("/sys/kernel/mm/ksm/{}", file);
-        let content = std::fs::read_to_string(&path).map_err(|e| KsmError::IoError(e))?;
+        let content = std::fs::read_to_string(&path).map_err(KsmError::IoError)?;
 
         content
             .trim()
@@ -169,7 +183,7 @@ impl KsmManager {
 
     fn read_sysfs_u32(&self, file: &str) -> Result<u32, KsmError> {
         let path = format!("/sys/kernel/mm/ksm/{}", file);
-        let content = std::fs::read_to_string(&path).map_err(|e| KsmError::IoError(e))?;
+        let content = std::fs::read_to_string(&path).map_err(KsmError::IoError)?;
 
         content
             .trim()

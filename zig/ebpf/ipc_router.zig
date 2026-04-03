@@ -1,5 +1,4 @@
 const std = @import("std");
-const builtin = @import("builtin");
 
 const BPF_PROG_TYPE_SK_MSG: u32 = 23;
 const BPF_MAP_TYPE_SOCKMAP: u32 = 15;
@@ -42,44 +41,6 @@ pub const RouteStats = struct {
 
 var route_stats: RouteStats = undefined;
 
-fn bpf_prog_load(prog_type: u32, insns_ptr: [*]const u8, insns_len: usize, license: [*]const u8) i32 {
-    _ = prog_type;
-    _ = insns_ptr;
-    _ = insns_len;
-    _ = license;
-    return -1;
-}
-
-fn bpf_map_create(map_type: u32, key_size: u32, value_size: u32, max_entries: u32, options: u32) i32 {
-    _ = map_type;
-    _ = key_size;
-    _ = value_size;
-    _ = max_entries;
-    _ = options;
-    return -1;
-}
-
-fn bpf_map_update_elem(map_fd: i32, key: *const anyopaque, value: *const anyopaque, flags: u64) i32 {
-    _ = map_fd;
-    _ = key;
-    _ = value;
-    _ = flags;
-    return 0;
-}
-
-fn bpf_map_lookup_elem(map_fd: i32, key: *const anyopaque, value: *anyopaque) i32 {
-    _ = map_fd;
-    _ = key;
-    _ = value;
-    return -1;
-}
-
-fn bpf_map_delete_elem(map_fd: i32, key: *const anyopaque) i32 {
-    _ = map_fd;
-    _ = key;
-    return 0;
-}
-
 pub export fn init_router(prog_path: [*:0]const u8) i32 {
     _ = prog_path;
 
@@ -96,11 +57,17 @@ pub export fn init_router(prog_path: [*:0]const u8) i32 {
 }
 
 pub export fn create_sockmap(key_size: u32, value_size: u32, max_entries: u32) i32 {
-    return bpf_map_create(BPF_MAP_TYPE_SOCKMAP, key_size, value_size, max_entries, BPF_F_LOCK);
+    _ = key_size;
+    _ = value_size;
+    _ = max_entries;
+    return -1;
 }
 
 pub export fn create_route_map(key_size: u32, value_size: u32, max_entries: u32) i32 {
-    return bpf_map_create(BPF_MAP_TYPE_HASH, key_size, value_size, max_entries, BPF_F_LOCK);
+    _ = key_size;
+    _ = value_size;
+    _ = max_entries;
+    return -1;
 }
 
 pub export fn update_sockmap_route(map_fd: i32, src_peer: u32, dst_sock: u32) i32 {
@@ -123,23 +90,19 @@ pub export fn attach_sockmap_prog(map_fd: i32, prog_fd: i32) i32 {
 }
 
 pub export fn add_route(map_fd: i32, src: u32, dst: u32, weight: u8, urgency: u8, ring_fd: i32) i32 {
-    const entry = RouteEntry{
-        .src_peer = src,
-        .dst_sock = dst,
-        .weight = weight,
-        .urgency = urgency,
-        .ring_buffer_fd = ring_fd,
-        .active = true,
-    };
-
-    var key: u32 = src;
-    _ = bpf_map_update_elem(map_fd, &key, &entry, 0);
+    _ = map_fd;
+    _ = src;
+    _ = dst;
+    _ = weight;
+    _ = urgency;
+    _ = ring_fd;
     return 0;
 }
 
 pub export fn remove_route(map_fd: i32, src: u32) i32 {
-    var key: u32 = src;
-    return bpf_map_delete_elem(map_fd, &key);
+    _ = map_fd;
+    _ = src;
+    return 0;
 }
 
 pub export fn get_route_priority(src_peer: u32, signal_type: u8, urgency: u8) u8 {

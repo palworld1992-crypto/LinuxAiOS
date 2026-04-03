@@ -6,6 +6,12 @@ pub struct ShmManager {
     regions: RwLock<HashMap<String, SharedMemoryRegion>>,
 }
 
+impl Default for ShmManager {
+    fn default() -> Self {
+        Self::new()
+    }
+}
+
 impl ShmManager {
     pub fn new() -> Self {
         Self {

@@ -230,8 +230,8 @@ impl RiskAssessmentEngine {
         }
 
         // Gửi tới Master Tunnel nếu client đã được đăng ký
-        let client_opt = self.health_master_client.read();
-        if let Some(client) = client_opt.as_ref() {
+        let client_opt = self.health_master_client.read().clone();
+        if let Some(client) = client_opt {
             client.publish_risk_level(level, signature).await?;
             info!(target: "risk_engine", "Successfully published risk level {:?} to Master", level);
         } else {

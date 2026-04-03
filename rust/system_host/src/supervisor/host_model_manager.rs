@@ -8,6 +8,12 @@ pub struct HostModelManager {
     _models_dir: PathBuf,
 }
 
+impl Default for HostModelManager {
+    fn default() -> Self {
+        Self::new()
+    }
+}
+
 impl HostModelManager {
     pub fn new() -> Self {
         Self {

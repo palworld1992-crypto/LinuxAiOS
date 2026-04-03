@@ -78,8 +78,8 @@ impl Block {
             let mut new_hashes = Vec::new();
 
             // Nếu số lượng hash lẻ, nhân đôi hash cuối cùng để tạo cặp
-            if hashes.len() % 2 != 0 {
-                let last = hashes.last().ok_or_else(|| bincode::ErrorKind::SizeLimit)?;
+            if !hashes.len().is_multiple_of(2) {
+                let last = hashes.last().ok_or(bincode::ErrorKind::SizeLimit)?;
                 hashes.push(last.clone());
             }
 

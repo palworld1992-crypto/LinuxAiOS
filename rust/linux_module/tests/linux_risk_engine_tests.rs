@@ -60,6 +60,7 @@ fn test_risk_engine_evaluate() {
             module_id: "linux".to_string(),
             timestamp: current_timestamp_ms(),
             status: HealthStatus::Healthy,
+            potential: 1.0,
             details: vec![],
         };
         health_tunnel.record_health(record).unwrap();
@@ -68,6 +69,7 @@ fn test_risk_engine_evaluate() {
             module_id: "windows".to_string(),
             timestamp: current_timestamp_ms(),
             status: HealthStatus::Degraded,
+            potential: 0.5,
             details: vec![],
         };
         health_tunnel.record_health(record2).unwrap();
@@ -94,6 +96,7 @@ fn test_risk_engine_high_risk() {
             module_id: "linux".to_string(),
             timestamp: current_timestamp_ms(),
             status: HealthStatus::Failed,
+            potential: 0.0,
             details: vec![],
         };
         health_tunnel.record_health(record).unwrap();
@@ -114,6 +117,7 @@ fn test_risk_engine_high_risk() {
                 module_id: module.to_string(),
                 timestamp: current_timestamp_ms(),
                 status: HealthStatus::Degraded,
+                potential: 0.5,
                 details: vec![],
             };
             health_tunnel.record_health(rec).unwrap();
@@ -149,6 +153,7 @@ fn test_publish_current_risk() {
                     module_id: module.to_string(),
                     timestamp: current_timestamp_ms(),
                     status: HealthStatus::Unknown,
+                    potential: 0.5,
                     details: vec![],
                 };
                 health_tunnel.record_health(rec).unwrap();

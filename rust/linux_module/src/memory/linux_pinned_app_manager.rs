@@ -24,6 +24,12 @@ pub struct PinnedAppManager {
     apps: RwLock<HashMap<String, PinnedApp>>,
 }
 
+impl Default for PinnedAppManager {
+    fn default() -> Self {
+        Self::new()
+    }
+}
+
 impl PinnedAppManager {
     pub fn new() -> Self {
         Self {

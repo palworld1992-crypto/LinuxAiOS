@@ -39,6 +39,7 @@ fn test_set_health_tunnel() {
         module_id: "test".to_string(),
         timestamp: common::utils::current_timestamp_ms(),
         status: common::health_tunnel::HealthStatus::Healthy,
+        potential: 1.0,
         details: vec![],
     };
     main.health_tunnel

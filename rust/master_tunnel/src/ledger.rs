@@ -17,14 +17,17 @@ pub struct Ledger {
     last_block: RwLock<Option<Block>>,
 }
 
+impl Default for Ledger {
+    fn default() -> Self {
+        Self::new()
+    }
+}
+
 impl Ledger {
     pub fn new() -> Self {
         let genesis = genesis_block();
-        let mut chain = Vec::new();
-        chain.push(genesis.clone());
-
-        let mut index = HashMap::new();
-        index.insert(genesis.hash.clone(), 0);
+        let chain = vec![genesis.clone()];
+        let index = HashMap::from([(genesis.hash.clone(), 0)]);
 
         Self {
             chain: RwLock::new(chain),
@@ -101,6 +104,10 @@ impl Ledger {
         self.chain.read().len() as u64
     }
 
+    pub fn is_empty(&self) -> bool {
+        self.chain.read().is_empty()
+    }
+
     /// Tính toán root của toàn bộ trạng thái ledger hiện tại.
     pub fn compute_state_root(&self) -> Result<Vec<u8>, anyhow::Error> {
         let chain = self.chain.read();
@@ -112,7 +119,7 @@ impl Ledger {
 
         while hashes.len() > 1 {
             let mut next_level = Vec::new();
-            if hashes.len() % 2 != 0 {
+            if !hashes.len().is_multiple_of(2) {
                 let last = hashes.last().ok_or_else(|| anyhow!("No last hash"))?;
                 hashes.push(last.clone());
             }

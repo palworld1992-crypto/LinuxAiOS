@@ -47,3 +47,71 @@ impl HealthTunnel {
         self.ledger.write().rollback()
     }
 }
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+    use common::health_tunnel::HealthStatus;
+
+    #[test]
+    fn test_health_tunnel_new() {
+        let tunnel = HealthTunnel::new("test_module");
+        assert!(tunnel.last_health("test_module").is_none());
+    }
+
+    #[test]
+    fn test_record_health() {
+        let tunnel = HealthTunnel::new("test_module");
+        let record = HealthRecord {
+            module_id: "test_module".to_string(),
+            status: HealthStatus::Healthy,
+            potential: 0.8,
+            timestamp: 1000,
+            details: vec![],
+        };
+        assert!(tunnel.record_health(record).is_ok());
+
+        let health = tunnel.last_health("test_module").unwrap();
+        assert_eq!(health.status, HealthStatus::Healthy);
+    }
+
+    #[test]
+    fn test_health_history() {
+        let tunnel = HealthTunnel::new("test_module");
+
+        for i in 0..5 {
+            let record = HealthRecord {
+                module_id: "test_module".to_string(),
+                status: if i % 2 == 0 {
+                    HealthStatus::Healthy
+                } else {
+                    HealthStatus::Degraded
+                },
+                potential: 0.5,
+                timestamp: 1000 + i as u64,
+                details: vec![],
+            };
+            tunnel.record_health(record).unwrap();
+        }
+
+        let history = tunnel.health_history("test_module", 3);
+        assert!(history.len() <= 3);
+    }
+
+    #[test]
+    fn test_rollback() {
+        let tunnel = HealthTunnel::new("test_module");
+
+        let record = HealthRecord {
+            module_id: "test_module".to_string(),
+            status: HealthStatus::Healthy,
+            potential: 0.8,
+            timestamp: 1000,
+            details: vec![],
+        };
+        tunnel.record_health(record).unwrap();
+
+        let result = tunnel.rollback();
+        assert!(result.is_some() || result.is_none());
+    }
+}

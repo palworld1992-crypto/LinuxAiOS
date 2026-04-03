@@ -6,6 +6,12 @@ pub struct NotificationBroadcaster {
     tx: broadcast::Sender<Vec<u8>>,
 }
 
+impl Default for NotificationBroadcaster {
+    fn default() -> Self {
+        Self::new()
+    }
+}
+
 impl NotificationBroadcaster {
     pub fn new() -> Self {
         let (tx, _) = broadcast::channel(100);

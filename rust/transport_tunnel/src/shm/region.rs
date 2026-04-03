@@ -49,4 +49,8 @@ impl SharedMemoryRegion {
     pub fn len(&self) -> usize {
         self.size
     }
+
+    pub fn is_empty(&self) -> bool {
+        self.size == 0
+    }
 }

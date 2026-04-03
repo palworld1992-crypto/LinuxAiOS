@@ -116,7 +116,7 @@ impl MasterService for MasterTunnel {
                     registered_at: common::utils::current_timestamp_ms(),
                 },
             )
-            .map_err(|e| Status::already_exists(e))?;
+            .map_err(Status::already_exists)?;
 
         Ok(Response::new(RegisterResponse {
             supervisor_id: id,

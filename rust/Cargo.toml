@@ -14,6 +14,7 @@ members = [
     "health_master_tunnel",
     "child_tunnel",
     "health_tunnel",
+    "database_tunnel",
     "fuzz",
 ]
 resolver = "2"

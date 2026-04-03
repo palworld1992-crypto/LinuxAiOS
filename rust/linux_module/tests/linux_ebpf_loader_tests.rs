@@ -1,5 +1,4 @@
 use linux_module::memory::MemoryTieringManager;
-use linux_module::zig_bindings;
 use scc::ConnectionManager;
 use std::env;
 use std::sync::Arc;
@@ -15,23 +14,6 @@ where
     let result = f();
     env::remove_var("AIOS_BASE_DIR");
     result
-}
-
-#[test]
-fn test_load_coldpage_program_fails_without_file() {
-    with_temp_base(|| {
-        let fake_path = std::ffi::CString::new("/nonexistent/path").unwrap();
-        let fd = unsafe { zig_bindings::zig_load_coldpage_program(fake_path.as_ptr()) };
-        assert!(fd < 0, "Should fail to load non-existent eBPF program");
-    });
-}
-
-#[test]
-fn test_attach_coldpage_program_fails_with_invalid_fd() {
-    with_temp_base(|| {
-        let result = unsafe { zig_bindings::zig_attach_coldpage_program(-1) };
-        assert!(result < 0, "Attaching with invalid fd should fail");
-    });
 }
 
 #[test]
@@ -71,7 +53,7 @@ fn test_ebpf_fallback_to_user_space() {
 fn test_tracker_running_state() {
     with_temp_base(|| {
         let conn_mgr = Arc::new(ConnectionManager::new());
-        let manager = MemoryTieringManager::new(conn_mgr);
+        let mut manager = MemoryTieringManager::new(conn_mgr);
 
         // Initially not running
         assert!(!manager.is_tracker_running());

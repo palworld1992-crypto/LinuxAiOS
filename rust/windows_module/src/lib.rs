@@ -1,7 +1,7 @@
 //! Windows Module – Lớp tương thích Windows (Wine, KVM)
 
 #[path = "main/mod.rs"]
-pub mod windows_main;
+pub mod windows;
 pub mod supervisor;
 
 pub mod assistant;
@@ -17,7 +17,9 @@ pub mod translation;
 use anyhow::Result;
 use common::health_tunnel::HealthTunnel;
 
-pub use windows_main::WindowsMain;
+pub use windows::WindowsMain;
+pub use windows::WindowsLocalFailover;
+pub use windows::WindowsDegradedMode;
 pub use supervisor::WindowsSupervisor;
 
 pub struct HealthTunnelImpl;

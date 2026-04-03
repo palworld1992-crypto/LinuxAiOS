@@ -3,14 +3,24 @@ name = "aios-fuzz"
 version.workspace = true
 edition.workspace = true
 publish = false
+autotests = false
 
-[[test]]
-name = "fuzz_transport_tunnel"
+[package.metadata]
+cargo-fuzz = true
+
+[[bin]]
+name = "transport_tunnel"
 path = "fuzz_targets/transport_tunnel.rs"
+test = false
+bench = false
+doc = false
 
-[[test]]
-name = "fuzz_child_tunnel"
+[[bin]]
+name = "child_tunnel"
 path = "fuzz_targets/child_tunnel.rs"
+test = false
+bench = false
+doc = false
 
 [dependencies]
 libfuzzer-sys = { workspace = true }

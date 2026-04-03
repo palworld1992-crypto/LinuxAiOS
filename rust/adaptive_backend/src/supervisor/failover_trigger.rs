@@ -5,6 +5,12 @@ use tracing::info;
 
 pub struct FailoverTrigger;
 
+impl Default for FailoverTrigger {
+    fn default() -> Self {
+        Self::new()
+    }
+}
+
 impl FailoverTrigger {
     pub fn new() -> Self {
         Self

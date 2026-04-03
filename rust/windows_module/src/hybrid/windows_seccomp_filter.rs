@@ -307,8 +307,8 @@ impl WindowsSeccompFilter {
     }
 
     #[cfg(not(feature = "seccomp"))]
-    pub fn create_filter(&self) -> () {
-        ()
+    pub fn create_filter(&self) {
+        
     }
 
     pub fn enable(&self) {

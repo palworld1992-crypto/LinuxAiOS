@@ -15,6 +15,12 @@ pub struct Proposal {
     pub expires_at: u64,
 }
 
+impl Default for ApprovalManager {
+    fn default() -> Self {
+        Self::new()
+    }
+}
+
 impl ApprovalManager {
     pub fn new() -> Self {
         Self {

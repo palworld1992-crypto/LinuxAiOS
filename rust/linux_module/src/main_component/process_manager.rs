@@ -27,6 +27,12 @@ pub struct ProcessManager {
     cgroup_root: PathBuf,
 }
 
+impl Default for ProcessManager {
+    fn default() -> Self {
+        Self::new()
+    }
+}
+
 impl ProcessManager {
     pub fn new() -> Self {
         Self {
@@ -60,18 +66,13 @@ impl ProcessManager {
 
     pub fn track_process(&self, pid: u32, name: String, cmdline: Vec<String>) {
         let mut managed = self.managed.write();
-        if !managed.contains_key(&pid) {
-            managed.insert(
-                pid,
-                ManagedProcess {
+        managed.entry(pid).or_insert_with(|| ManagedProcess {
                     name,
                     cmdline,
                     cgroup_path: None,
                     cpu_affinity: None,
                     last_health_check: current_timestamp_ms(),
-                },
-            );
-        }
+                });
     }
 
     pub fn assign_to_cgroup(&self, pid: u32, cgroup_name: &str) -> Result<()> {

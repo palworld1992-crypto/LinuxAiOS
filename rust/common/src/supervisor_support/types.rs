@@ -28,7 +28,9 @@ impl SupportContext {
 }
 
 #[derive(Debug, Clone, Copy, PartialEq, Eq, Serialize, Deserialize)]
+#[derive(Default)]
 pub enum SupportStatus {
+    #[default]
     Idle,
     Supporting,
     Suspended,
@@ -52,11 +54,6 @@ impl Default for SupportContext {
     }
 }
 
-impl Default for SupportStatus {
-    fn default() -> Self {
-        Self::Idle
-    }
-}
 
 #[cfg(test)]
 mod tests {

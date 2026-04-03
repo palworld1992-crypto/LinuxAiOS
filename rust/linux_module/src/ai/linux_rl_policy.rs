@@ -93,7 +93,7 @@ impl LinuxRlPolicy {
         let state = self.current_state.read().clone()?;
         if self.model.is_none() {
             // Fallback heuristic
-            if state.get(0).copied().unwrap_or(0.0) > 0.8 {
+            if state.first().copied().unwrap_or(0.0) > 0.8 {
                 return Some((RlAction::PageOut(1), 0.5));
             }
             return None;

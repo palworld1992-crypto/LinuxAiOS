@@ -1,11 +1,24 @@
 use common::snapshot::{Signature, SnapshotError, SnapshotManager};
 use std::path::PathBuf;
+use std::time::SystemTime;
+
+fn fresh_test_dir() -> PathBuf {
+    let timestamp = SystemTime::now()
+        .duration_since(SystemTime::UNIX_EPOCH)
+        .unwrap()
+        .as_nanos();
+    let dir = PathBuf::from(format!("/tmp/test_snap_aios_{}", timestamp));
+    std::fs::create_dir_all(&dir).unwrap();
+    dir
+}
 
 #[test]
 fn test_snapshot_manager_new() {
-    let mgr = SnapshotManager::new(PathBuf::from("/tmp/test_snap"));
+    let dir = fresh_test_dir();
+    let mgr = SnapshotManager::new(dir.clone());
     let list = mgr.list_snapshots();
     assert!(list.is_empty());
+    let _ = std::fs::remove_dir_all(dir);
 }
 
 #[test]

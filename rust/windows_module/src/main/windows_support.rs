@@ -1,6 +1,6 @@
 //! Windows Module Support Functions – Implement SupervisorSupport for WindowsMain
 
-use crate::windows_main::windows_local_failover::WindowsLocalFailover;
+use crate::windows::windows_local_failover::WindowsLocalFailover;
 use common::health_tunnel::{HealthRecord, HealthTunnel};
 use common::supervisor_support::{SupervisorSupport, SupportContext, SupportError, SupportStatus};
 use parking_lot::RwLock;
@@ -115,7 +115,7 @@ impl SupervisorSupport for WindowsSupport {
             .unwrap_or(0);
 
         let record = HealthRecord {
-            module_id: "windows_main".to_string(),
+            module_id: "windows".to_string(),
             status: common::health_tunnel::HealthStatus::Healthy,
             potential: 0.5,
             details: format!("Support started with tasks: {:?}", tasks).into_bytes(),
@@ -142,7 +142,7 @@ impl SupervisorSupport for WindowsSupport {
             .unwrap_or(0);
 
         let record = HealthRecord {
-            module_id: "windows_main".to_string(),
+            module_id: "windows".to_string(),
             status: common::health_tunnel::HealthStatus::Healthy,
             potential: 0.8,
             details: "Support delegated back".to_string().into_bytes(),

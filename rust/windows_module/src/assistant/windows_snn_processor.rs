@@ -212,7 +212,9 @@ mod tests {
     #[test]
     fn test_neuron_fire() {
         let mut state = NeuronState::new(1.0);
-        state.integrate(1.5, 0.01, 0.5);
+        for _ in 0..100 {
+            state.integrate(1.5, 0.01, 0.5);
+        }
         assert!(state.fire());
     }
 }

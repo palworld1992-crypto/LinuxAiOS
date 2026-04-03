@@ -7,6 +7,12 @@ pub struct WindowsDegradedMode {
     active: RwLock<bool>,
 }
 
+impl Default for WindowsDegradedMode {
+    fn default() -> Self {
+        Self::new()
+    }
+}
+
 impl WindowsDegradedMode {
     pub fn new() -> Self {
         Self {

@@ -18,7 +18,7 @@ impl HostWorkerManager {
         // Hiện tại ConnectionManager chưa hỗ trợ request-response, chỉ có send one-way.
         // Tạm thời trả về lỗi.
         // TODO: implement proper request-response using channels or a separate mechanism.
-        let _ = self
+        self
             .conn_mgr
             .send(worker_name, request)
             .map_err(|e| anyhow!("Failed to send to worker: {}", e))?;

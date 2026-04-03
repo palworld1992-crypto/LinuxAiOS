@@ -12,6 +12,12 @@ pub struct PolicyEngine {
     config: PolicyConfig,
 }
 
+impl Default for PolicyEngine {
+    fn default() -> Self {
+        Self::new()
+    }
+}
+
 impl PolicyEngine {
     pub fn new() -> Self {
         let default_config = PolicyConfig {

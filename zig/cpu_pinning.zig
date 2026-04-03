@@ -1,7 +1,5 @@
 const std = @import("std");
 
-const linux = std.os.linux;
-
 pub export fn pin_thread_to_core(
     pid: i32,
     core_mask: u64,

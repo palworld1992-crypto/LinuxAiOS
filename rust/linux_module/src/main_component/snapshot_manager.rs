@@ -52,11 +52,11 @@ impl SnapshotMeta {
     pub fn compute_hash(&self) -> Vec<u8> {
         let mut hasher = Sha256::new();
         hasher.update(self.name.as_bytes());
-        hasher.update(&self.timestamp.to_le_bytes());
+        hasher.update(self.timestamp.to_le_bytes());
         hasher.update(self.path.to_string_lossy().as_bytes());
         hasher.update(self.source_path.to_string_lossy().as_bytes());
-        hasher.update(&self.size.to_le_bytes());
-        hasher.update(&self.version.to_le_bytes());
+        hasher.update(self.size.to_le_bytes());
+        hasher.update(self.version.to_le_bytes());
         hasher.finalize().to_vec()
     }
 }
@@ -243,12 +243,11 @@ impl SnapshotManager {
         })?;
 
         let status = Command::new("btrfs")
-            .args(&["subvolume", "snapshot", "-r", source_str, target_str])
+            .args(["subvolume", "snapshot", "-r", source_str, target_str])
             .status()
             .map_err(SnapshotError::Io)?;
         if !status.success() {
-            return Err(SnapshotError::Io(std::io::Error::new(
-                std::io::ErrorKind::Other,
+            return Err(SnapshotError::Io(std::io::Error::other(
                 "btrfs snapshot failed",
             )));
         }
@@ -274,12 +273,11 @@ impl SnapshotManager {
         })?;
 
         let status = Command::new("rsync")
-            .args(&["-a", "--delete", source_str, target_str])
+            .args(["-a", "--delete", source_str, target_str])
             .status()
             .map_err(SnapshotError::Io)?;
         if !status.success() {
-            return Err(SnapshotError::Io(std::io::Error::new(
-                std::io::ErrorKind::Other,
+            return Err(SnapshotError::Io(std::io::Error::other(
                 "rsync snapshot failed",
             )));
         }
@@ -322,8 +320,7 @@ impl SnapshotManager {
         let mut hasher = Sha256::new();
         for entry in WalkDir::new(dir) {
             let entry = entry.map_err(|e| {
-                SnapshotError::Io(std::io::Error::new(
-                    std::io::ErrorKind::Other,
+                SnapshotError::Io(std::io::Error::other(
                     e.to_string(),
                 ))
             })?;
