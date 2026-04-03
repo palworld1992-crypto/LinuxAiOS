@@ -1,0 +1,11 @@
+/root/aios/.cargo-target/release/deps/cargo_metadata-37d1afadd0d5c8ae.d: /root/aios/.cargo-home/registry/src/index.crates.io-1949cf8c6b5b557f/cargo_metadata-0.23.1/src/lib.rs /root/aios/.cargo-home/registry/src/index.crates.io-1949cf8c6b5b557f/cargo_metadata-0.23.1/src/dependency.rs /root/aios/.cargo-home/registry/src/index.crates.io-1949cf8c6b5b557f/cargo_metadata-0.23.1/src/diagnostic.rs /root/aios/.cargo-home/registry/src/index.crates.io-1949cf8c6b5b557f/cargo_metadata-0.23.1/src/errors.rs /root/aios/.cargo-home/registry/src/index.crates.io-1949cf8c6b5b557f/cargo_metadata-0.23.1/src/messages.rs
+
+/root/aios/.cargo-target/release/deps/libcargo_metadata-37d1afadd0d5c8ae.rlib: /root/aios/.cargo-home/registry/src/index.crates.io-1949cf8c6b5b557f/cargo_metadata-0.23.1/src/lib.rs /root/aios/.cargo-home/registry/src/index.crates.io-1949cf8c6b5b557f/cargo_metadata-0.23.1/src/dependency.rs /root/aios/.cargo-home/registry/src/index.crates.io-1949cf8c6b5b557f/cargo_metadata-0.23.1/src/diagnostic.rs /root/aios/.cargo-home/registry/src/index.crates.io-1949cf8c6b5b557f/cargo_metadata-0.23.1/src/errors.rs /root/aios/.cargo-home/registry/src/index.crates.io-1949cf8c6b5b557f/cargo_metadata-0.23.1/src/messages.rs
+
+/root/aios/.cargo-target/release/deps/libcargo_metadata-37d1afadd0d5c8ae.rmeta: /root/aios/.cargo-home/registry/src/index.crates.io-1949cf8c6b5b557f/cargo_metadata-0.23.1/src/lib.rs /root/aios/.cargo-home/registry/src/index.crates.io-1949cf8c6b5b557f/cargo_metadata-0.23.1/src/dependency.rs /root/aios/.cargo-home/registry/src/index.crates.io-1949cf8c6b5b557f/cargo_metadata-0.23.1/src/diagnostic.rs /root/aios/.cargo-home/registry/src/index.crates.io-1949cf8c6b5b557f/cargo_metadata-0.23.1/src/errors.rs /root/aios/.cargo-home/registry/src/index.crates.io-1949cf8c6b5b557f/cargo_metadata-0.23.1/src/messages.rs
+
+/root/aios/.cargo-home/registry/src/index.crates.io-1949cf8c6b5b557f/cargo_metadata-0.23.1/src/lib.rs:
+/root/aios/.cargo-home/registry/src/index.crates.io-1949cf8c6b5b557f/cargo_metadata-0.23.1/src/dependency.rs:
+/root/aios/.cargo-home/registry/src/index.crates.io-1949cf8c6b5b557f/cargo_metadata-0.23.1/src/diagnostic.rs:
+/root/aios/.cargo-home/registry/src/index.crates.io-1949cf8c6b5b557f/cargo_metadata-0.23.1/src/errors.rs:
+/root/aios/.cargo-home/registry/src/index.crates.io-1949cf8c6b5b557f/cargo_metadata-0.23.1/src/messages.rs:

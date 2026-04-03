@@ -1,0 +1,1 @@
+cargo:rustc-env=MIME_TYPES_GENERATED_PATH=/root/aios/.cargo-target/release/build/mime_guess-f36f93dc34e30141/out/mime_types_generated.rs

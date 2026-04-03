@@ -1,0 +1,27 @@
+[package]
+name = "transport_tunnel"
+version.workspace = true
+edition.workspace = true
+
+[lints.rust]
+unexpected_cfgs = { level = "warn", check-cfg = ['cfg(tarpaulin)'] }
+
+[dependencies]
+common = { path = "../common" }
+scc = { path = "../scc" }
+tokio = { version = "1.0", features = ["full"] }
+rayon = "1.10"
+aes = "0.8"
+ctr = "0.9"
+polyval = "0.6"
+aes-gcm = "0.10"
+rand = { workspace = true }
+memmap2 = "0.9"
+parking_lot = "0.12"
+tracing = "0.1"
+anyhow = "1.0"
+bytemuck = "1.14"
+num_cpus = "1.16"
+libc = "0.2"
+hmac = "0.12"
+sha2 = { workspace = true }

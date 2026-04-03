@@ -1,0 +1,7 @@
+[package]
+name = "android_module"
+version.workspace = true
+edition.workspace = true
+
+[dependencies]
+common = { path = "../common" }

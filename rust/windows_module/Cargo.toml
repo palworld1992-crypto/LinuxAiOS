@@ -1,0 +1,41 @@
+[package]
+name = "windows_module"
+version.workspace = true
+edition.workspace = true
+
+[dependencies]
+common = { path = "../common" }
+scc = { path = "../scc" }
+anyhow = "1.0"
+serde = { version = "1.0", features = ["derive"] }
+serde_json = "1.0"
+tokio = { version = "1.0", features = ["full"] }
+tracing = "0.1"
+parking_lot = "0.12"
+hex = "0.4"
+thiserror = "1.0"
+memmap2 = "0.9"
+lru = "0.12"
+libloading = "0.8"
+nix = { version = "0.28", features = ["process", "signal"] }
+dynasm = "0.7"
+dynasmrt = "0.7"
+crossbeam = "0.8"
+ringbuf = "0.4"
+evmap = "11.0"
+dashmap = "6.0"
+candle-core = { workspace = true }
+candle-nn = { workspace = true }
+wgpu = "0.19"
+sysinfo = "0.29"
+rand = "0.8"
+libc = "0.2"
+
+[target.'cfg(windows)'.dependencies]
+virt = "0.4"
+
+[dev-dependencies]
+tempfile = "3.8"
+
+[features]
+seccomp = []

@@ -1,0 +1,19 @@
+{
+    "version": "2.0.0",
+    "tasks": [
+        {
+            "label": "🚀 Build LinusAiOS (Full)",
+            "type": "shell",
+            // Sử dụng một chuỗi lệnh duy nhất, không dùng mảng args để tránh lỗi Unix
+            "command": "sudo renice -n -10 -p $$ && zig build -Doptimize=ReleaseSafe -j12 && g++ -std=c++23 -march=native -O3 -flto ./browser_module/src/*.cpp -o ./bin/browser_module.o && gprbuild -P spark/spark.gpr -j12 && cd rust && cargo build --release",
+            "group": {
+                "kind": "build",
+                "isDefault": true
+            },
+            "presentation": {
+                "reveal": "always",
+                "panel": "new"
+            }
+        }
+    ]
+}

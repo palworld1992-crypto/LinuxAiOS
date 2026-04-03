@@ -1,0 +1,60 @@
+[workspace]
+members = [
+    "common",
+    "shared_buffer",
+    "scc",
+    "transport_tunnel",
+    "linux_module",
+    "windows_module",
+    "android_module",
+    "sih",
+    "system_host",
+    "adaptive_backend",
+    "master_tunnel",
+    "health_master_tunnel",
+    "child_tunnel",
+    "health_tunnel",
+    "fuzz",
+]
+resolver = "2"
+
+[workspace.package]
+version = "0.1.0"
+edition = "2021"
+authors = ["AIOS Team"]
+license = "MIT OR Apache-2.0"
+
+[profile.release]
+lto = "fat"
+codegen-units = 1
+panic = "abort"
+strip = false
+
+[workspace.dependencies]
+# Database - Ép toàn bộ workspace dùng bundled để tránh lỗi linker hệ thống
+rusqlite = { version = "0.32.1", features = ["bundled", "modern_sqlite"] }
+dashmap = "6.0"
+# Hệ sinh thái Rand & Half - Cố định phiên bản để tương thích với Candle
+rand = "=0.8.5"
+rand_distr = "=0.4.3"
+half = { version = "=2.4.1", features = ["rand_distr", "num-traits"] }
+
+# AI Dependencies - Cố định phiên bản tại Workspace để tránh mismatch giữa các module
+candle-core = "=0.7.2"
+candle-nn = "=0.7.2"
+candle-onnx = "=0.7.2"
+
+# Các thư viện phổ biến khác (tùy chọn đưa vào đây để quản lý tập trung)
+tokio = { version = "1.0", features = ["full"] }
+serde = { version = "1.0", features = ["derive"] }
+tracing = "0.1"
+anyhow = "1.0"
+sha2 = "0.10"
+
+# Testing dependencies
+loom = "0.7"
+criterion = "0.5"
+libfuzzer-sys = "0.4"
+
+[profile.dev]
+opt-level = 0

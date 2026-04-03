@@ -1,0 +1,160 @@
+warning: found module declaration for main.rs
+ --> windows_module/src/lib.rs:3:1
+  |
+3 | pub mod main;
+  | ^^^^^^^^^^^^^
+  |
+  = note: a binary crate cannot be used as library
+  = note: `#[warn(special_module_name)]` on by default
+
+warning: unused import: `Write`
+ --> windows_module/src/translation/windows_cache_manager.rs:5:21
+  |
+5 | ...Read, Write};
+  |          ^^^^^
+  |
+  = note: `#[warn(unused_imports)]` (part of `#[warn(unused)]`) on by default
+
+warning: unused import: `Read`
+ --> windows_module/src/translation/windows_cache_manager.rs:5:15
+  |
+5 | use std::io::{Read, W...
+  |               ^^^^
+
+warning: unused import: `std::io::Write`
+ --> windows_module/src/translation/windows_engine.rs:9:5
+  |
+9 | use std::io::Write;
+  |     ^^^^^^^^^^^^^^
+
+warning: type `MigrationState` is more private than the item `VmMemoryTiering::get_migration_state`
+   --> windows_module/src/executor/windows_memory_tiering.rs:170:5
+    |
+170 |     p...grationState> {
+    |     ^...^^^^^^^^^^^^^ method `VmMemoryTiering::get_migration_state` is reachable at visibility `pub`
+    |
+note: but type `MigrationState` is only usable at visibility `pub(self)`
+   --> windows_module/src/executor/windows_memory_tiering.rs:52:1
+    |
+ 52 | enum MigrationState {
+    | ^^^^^^^^^^^^^^^^^^^
+    = note: `#[warn(private_interfaces)]` on by default
+
+warning: field `failover` is never read
+  --> windows_module/src/main/windows_support.rs:14:5
+   |
+10 | pub struct WindowsSupport {
+   |            -------------- field in this struct
+...
+14 |     failover: Arc<WindowsLoc...
+   |     ^^^^^^^^
+   |
+   = note: `#[warn(dead_code)]` (part of `#[warn(unused)]`) on by default
+
+warning: field `tau` is never read
+  --> windows_module/src/assistant/windows_lnn_predictor.rs:26:5
+   |
+23 | pub struct WindowsLnnPredictor {
+   |            ------------------- field in this struct
+...
+26 |     tau: f32,
+   |     ^^^
+
+warning: field `migration_pipe` is never read
+  --> windows_module/src/executor/windows_memory_tiering.rs:48:5
+   |
+44 | pub struct VmMemoryTiering {
+   |            --------------- field in this struct
+...
+48 |     migration_pipe: RwLock<Op...
+   |     ^^^^^^^^^^^^^^
+
+warning: field `0` is never read
+  --> windows_module/src/executor/windows_memory_tiering.rs:57:12
+   |
+57 |     Failed(String),
+   |     ------ ^^^^^^
+   |     |
+   |     field in this variant
+   |
+   = note: `MigrationState` has derived impls for the traits `Debug` and `Clone`, but these are intentionally ignored during dead code analysis
+help: consider changing the field to be of unit type to suppress this warning while preserving the field numbering, or remove the field
+   |
+57 -     Failed(String),
+57 +     Failed(()),
+   |
+
+warning: variant `Completed` is never constructed
+  --> windows_module/src/executor/windows_memory_tiering.rs:56:5
+   |
+52 | enum MigrationState {
+   |      -------------- variant in this enum
+...
+56 |     Completed,
+   |     ^^^^^^^^^
+   |
+   = note: `MigrationState` has derived impls for the traits `Debug` and `Clone`, but these are intentionally ignored during dead code analysis
+
+warning: field `prewarming_duration_ms` is never read
+  --> windows_module/src/executor/windows_poda.rs:43:5
+   |
+37 | pub struct PodaManager {
+   |            ----------- field in this struct
+...
+43 |     prewarming_duration_ms: R...
+   |     ^^^^^^^^^^^^^^^^^^^^^^
+
+warning: field `loaded_versions` is never read
+  --> windows_module/src/ffi/dxvk_bindings.rs:69:5
+   |
+68 | pub struct DxvkBindings {
+   |            ------------ field in this struct
+69 |     loaded_versions: std::...
+   |     ^^^^^^^^^^^^^^^
+
+warning: field `seccomp_enabled` is never read
+  --> windows_module/src/hybrid/windows_manager.rs:33:5
+   |
+30 | pub struct WindowsHybridManager {
+   |            -------------------- field in this struct
+...
+33 |     seccomp_enabled: RwLock<bool>,
+   |     ^^^^^^^^^^^^^^^
+
+warning: field `allowed_syscalls` is never read
+   --> windows_module/src/hybrid/windows_manager.rs:115:5
+    |
+113 | pub struct WindowsSeccompFilter {
+    |            -------------------- field in this struct
+114 |     enabled: AtomicBool,
+115 |     allowed_syscalls: RwLock<Vec<l...
+    |     ^^^^^^^^^^^^^^^^
+
+warning: field `max_code_size_mb` is never read
+  --> windows_module/src/jit/windows_compiler.rs:50:5
+   |
+46 | pub struct JitCompiler {
+   |            ----------- field in this struct
+...
+50 |     max_code_size_mb: usize,
+   |     ^^^^^^^^^^^^^^^^
+
+warning: field `call_window_seconds` is never read
+  --> windows_module/src/profiling/windows_api_profiler.rs:49:5
+   |
+44 | pub struct ApiProfiler {
+   |            ----------- field in this struct
+...
+49 |     call_window_seconds: u64,
+   |     ^^^^^^^^^^^^^^^^^^^
+
+warning: field `sih_client` is never read
+  --> windows_module/src/security/windows_anti_cheat.rs:32:5
+   |
+31 | pub struct WindowsAntiCheat {
+   |            ---------------- field in this struct
+32 |     sih_client: Arc<Option<scc...
+   |     ^^^^^^^^^^
+
+warning: `windows_module` (lib) generated 17 warnings
+    Finished `dev` profile [unoptimized + debuginfo] target(s) in 0.25s

@@ -1,0 +1,46 @@
+with "config/spark_config.gpr";
+
+project Spark is
+
+   for Target use "x86_64-pc-linux-gnu";
+
+   for Library_Name use "scc";
+   
+   -- Chuyển sang relocatable để ép dùng PIC, tránh lỗi Relocation và platform support
+   for Library_Kind use "relocatable"; 
+
+   for Library_Interface use ("Spark", "Crypto_Engine", "Type_Mapper", "Idl_Types");
+   for Library_Standalone use "standard";
+
+   for Source_Dirs use ("src/", 
+                         "config/", 
+                         "idl_registry/",
+                         "crypto/", 
+                         "kms/", 
+                         "identity/", 
+                         "core_ledger/");
+
+   for Object_Dir use "obj/" & Spark_Config.Build_Profile;
+   for Library_Dir use "lib";
+   for Create_Missing_Dirs use "True";
+
+   package Compiler is
+      -- SỬA 2: Thêm "-fPIC" vào cả hai dòng switches
+      for Default_Switches ("Ada") use Spark_Config.Ada_Compiler_Switches & ("-fPIC");
+      for Switches ("Ada") use ("-gnatwa", "-gnatyg", "-gnat2022", "-fPIC");
+   end Compiler;
+
+   package Binder is
+      for Switches ("Ada") use ("-Es", "-n");
+   end Binder;
+
+   package Linker is
+      -- Thêm flag link cho thư viện share nếu cần
+      for Linker_Options use ("-loqs", "-lcrypto", "-lssl");
+   end Linker;
+
+   package Install is
+      for Artifacts (".") use ("share");
+   end Install;
+
+end Spark;

@@ -1,0 +1,31 @@
+warning: unused variable: `e`
+   --> windows_module/src/jit/windows_compiler.rs:145:44
+    |
+145 | ...err(|e| JitError...
+    |         ^ help: if this is intentional, prefix it with an underscore: `_e`
+    |
+    = note: `#[warn(unused_variables)]` (part of `#[warn(unused)]`) on by default
+
+warning: fields `conn_mgr` and `health_tunnel` are never read
+  --> windows_module/src/executor/windows_gpu_context.rs:17:5
+   |
+16 | pub struct WindowsGpuContext {
+   |            ----------------- fields in this struct
+17 |     conn_mgr: Arc<ConnectionMan...
+   |     ^^^^^^^^
+18 |     health_tunnel: Arc<dyn Heal...
+   |     ^^^^^^^^^^^^^
+   |
+   = note: `#[warn(dead_code)]` (part of `#[warn(unused)]`) on by default
+
+warning: field `max_code_size_mb` is never read
+  --> windows_module/src/jit/windows_compiler.rs:53:5
+   |
+49 | pub struct JitCompiler {
+   |            ----------- field in this struct
+...
+53 |     max_code_size_mb: usize,
+   |     ^^^^^^^^^^^^^^^^
+
+warning: `windows_module` (lib) generated 3 warnings (run `cargo fix --lib -p windows_module` to apply 1 suggestion)
+    Finished `dev` profile [unoptimized + debuginfo] target(s) in 0.31s

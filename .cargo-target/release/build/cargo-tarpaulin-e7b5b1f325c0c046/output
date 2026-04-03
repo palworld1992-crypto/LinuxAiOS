@@ -1,0 +1,5 @@
+cargo::rustc-check-cfg=cfg(ptrace_supported)
+cargo::rustc-check-cfg=cfg(tarpaulin_include)
+cargo::rustc-check-cfg=cfg(tarpaulin)
+cargo::rustc-check-cfg=cfg(nightly)
+cargo:rustc-cfg=ptrace_supported

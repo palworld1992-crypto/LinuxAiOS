@@ -1,0 +1,13 @@
+{
+    "version": "0.2.0",
+    "configurations": [
+        {
+            "name": "Build Spark",
+            "type": "ada",
+            "request": "launch",
+            "project": "${workspaceFolder}/spark.gpr",
+            "target": "all",
+            "args": []
+        }
+    ]
+}

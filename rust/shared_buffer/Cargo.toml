@@ -1,0 +1,12 @@
+[package]
+name = "shared_buffer"
+version = "0.1.0"
+edition = "2021"
+
+[dependencies]
+# Hiệu năng cao cho truy cập đồng thời (Mục 12.9)
+dashmap = "6.0"
+# Ring buffer cho dữ liệu stream/logs
+ringbuffer = "0.15"
+serde = { version = "1.0", features = ["derive"] }
+parking_lot = "0.12"

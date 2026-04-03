@@ -1,0 +1,11 @@
+name = "fix_env"
+description = "alr init --bin fix_env"
+version = "0.1.0-dev"
+
+authors = ["hung"]
+maintainers = ["hung <example@example.com>"]
+licenses = "MIT OR Apache-2.0 WITH LLVM-exception"
+website = ""
+tags = ["os-dev", "kernel", "spark", "ada", "rust", "crypto", "formal-v", "ai-os", "deterministic", "low-level"]
+
+executables = ["fix_env"]

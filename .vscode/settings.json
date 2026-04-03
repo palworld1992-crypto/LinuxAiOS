@@ -1,0 +1,39 @@
+{
+    // --- RUST ---
+    "rust-analyzer.linkedProjects": [
+        "rust/Cargo.toml"
+    ],
+    "rust-analyzer.cargo.buildScripts.enable": true,
+    "rust-analyzer.procMacro.enable": true,
+    "rust-analyzer.cargo.target": "x86_64-unknown-linux-gnu",
+    // --- ADA / SPARK ---
+    "ada.projectFile": "spark/spark.gpr",
+    "ada.trace.server": "off",
+    "ada.searchSystemAnsiStdlib": false,
+    "gnatprojectrunner.projectFile": "spark/spark.gpr",
+    // Use alire toolchain
+    "ada.defaultGnat": "/root/.local/share/alire/toolchains/gnat_native_14.2.1_06bb3def/bin/gnat",
+    "ada.toolchainPrefix": "x86_64-pc-linux-gnu",
+    // --- C++23 (Quan trọng cho RTX 4060 & i5-13400F) ---
+    "C_Cpp.default.cppStandard": "c++23",
+    "C_Cpp.default.cStandard": "c17",
+    "C_Cpp.default.intelliSenseMode": "linux-gcc-x64",
+    // Thêm includePath nếu bạn dùng CUDA cho module Neuron AI
+    "C_Cpp.default.includePath": [
+        "${workspaceFolder}/**",
+        "/usr/local/cuda/include"
+    ],
+    "zig.initialCleanup": true,
+    // --- GIAO DIỆN & TERMINAL ---
+    "files.exclude": {
+        "**/target": true,
+        "**/obj": true,
+        "**/zig-out": true,
+        "**/zig-cache": true,
+        "**/.build": true
+    },
+    "terminal.integrated.cwd": "${workspaceFolder}",
+    // Tự động định dạng code khi lưu cho dự án hệ thống
+    "editor.formatOnSave": true,
+    "cmake.sourceDirectory": "/root/aios/browser_module"
+}

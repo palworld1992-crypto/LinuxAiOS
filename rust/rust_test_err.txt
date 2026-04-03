@@ -1,0 +1,63 @@
+warning: field `pid` is never read
+  --> linux_module/src/main_component/process_manager.rs:15:9
+   |
+14 | ...truct ManagedProcess {
+   |          -------------- field in this struct
+15 | ...ub pid: u32,
+   |       ^^^
+   |
+   = note: `ManagedProcess` has derived impls for the traits `Clone` and `Debug`, but these are intentionally ignored during dead code analysis
+   = note: `#[warn(dead_code)]` (part of `#[warn(unused)]`) on by default
+
+warning: unnecessary trailing semicolon
+  --> windows_module/src/jit/windows_compiler.rs:75:67
+   |
+75 | ...g()))?;;
+   |           ^ help: remove this semicolon
+   |
+   = note: `#[warn(redundant_semicolons)]` (part of `#[warn(unused)]`) on by default
+
+warning: `linux_module` (lib) generated 1 warning
+warning: `windows_module` (lib) generated 1 warning
+   Compiling libfuzzer-sys v0.4.12
+   Compiling linux_module v0.1.0 (/root/aios/rust/linux_module)
+   Compiling windows_module v0.1.0 (/root/aios/rust/windows_module)
+   Compiling common v0.1.0 (/root/aios/rust/common)
+   Compiling aios-fuzz v0.1.0 (/root/aios/rust/fuzz)
+error[E0425]: cannot find value `id` in this scope
+  --> common/tests/common_integration.rs:83:43
+   |
+83 | ...hot(&id).expect("...
+   |         ^^ not found in this scope
+   |
+help: consider importing this function
+   |
+ 1 + use std::process::id;
+   |
+
+error[E0425]: cannot find value `id` in this scope
+  --> common/tests/common_integration.rs:87:47
+   |
+87 | ...hot(&id).expect("...
+   |         ^^ not found in this scope
+   |
+help: consider importing this function
+   |
+ 1 + use std::process::id;
+   |
+
+For more information about this error, try `rustc --explain E0425`.
+error: could not compile `common` (test "common_integration") due to 2 previous errors
+warning: build failed, waiting for other jobs to finish...
+warning: variable does not need to be mutable
+   --> windows_module/src/jit/windows_compiler.rs:262:13
+    |
+262 | ...et mut compiler = ...
+    |       ----^^^^^^^^
+    |       |
+    |       help: remove this `mut`
+    |
+    = note: `#[warn(unused_mut)]` (part of `#[warn(unused)]`) on by default
+
+warning: `windows_module` (lib test) generated 2 warnings (1 duplicate) (run `cargo fix --lib -p windows_module --tests` to apply 1 suggestion)
+warning: `linux_module` (lib test) generated 1 warning (1 duplicate)

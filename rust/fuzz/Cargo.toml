@@ -1,0 +1,28 @@
+[package]
+name = "aios-fuzz"
+version.workspace = true
+edition.workspace = true
+publish = false
+
+[[test]]
+name = "fuzz_transport_tunnel"
+path = "fuzz_targets/transport_tunnel.rs"
+
+[[test]]
+name = "fuzz_child_tunnel"
+path = "fuzz_targets/child_tunnel.rs"
+
+[dependencies]
+libfuzzer-sys = { workspace = true }
+
+[dependencies.transport_tunnel]
+path = "../transport_tunnel"
+default-features = false
+
+[dependencies.child_tunnel]
+path = "../child_tunnel"
+default-features = false
+
+[dependencies.common]
+path = "../common"
+default-features = false
