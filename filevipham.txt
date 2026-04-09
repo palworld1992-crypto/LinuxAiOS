@@ -1,0 +1,450 @@
+ 
+Lưu ý: Các file vi phạm này không phải là build lỗi mà là viết code trái quy định đề nghị chỉnh lại, chỉnh theo từng module sau khi chỉnh thì build để đảm bảo không gặp lỗi, sau đó đến các module tiếp theo nếu chưa rõ và ngữ cảnh thì đọc các tài liệu motahoatdong.txt và thietkemoi.txt
+
+
+
+
+
+## 0. Nghiêm cấm vô hiệu hóa warning (BẮT BUỘC)
+
+## 0a. Quy tắc cho code kiểm thử (BẮT BUỘC)
+
+ **Các hành vi bị cấm:**
+  - **Cấm dùng `unwrap()` hoặc `expect()`** trong bất kỳ test function nào (unit test, integration test, doctest).
++ - **Cấm dùng `println!()` trong test code** (dùng `tracing::debug!` hoặc `tracing::info!` thay thế).
++ - **Cấm dùng `unwrap_or()`, `unwrap_or_else()`, `unwrap_or_default()`** trong test code (phải xử lý lỗi tường minh bằng `match` hoặc `?`).
+  - **Cấm viết test function không trả về `Result`** nếu có thể thất bại.
+  - **Cấm dùng `#[should_panic]`** để kiểm tra lỗi có thể xử lý bằng `Result`.
+- - **Cấm dùng `println!` để debug** trong test code (dùng `tracing` hoặc `eprintln!` nếu thực sự cần).
++ - **Cấm dùng `eprintln!`** trong production; trong test chỉ được dùng khi thực sự cần và phải có comment giải thích.
++ Nếu dùng giá trị giả nhưng nó có logic hay implement thì phải comment chỗ đó.
+**Quy chuẩn bắt buộc:**
+```rust
+// Đúng
+#[test]
+fn test_something() -> anyhow::Result<()> {
+    let result = fallible_operation()?;
+    assert_eq!(result, expected);
+    Ok(())
+}
+
+// Sai – cấm
+#[test]
+fn test_something() {
+    let result = fallible_operation().unwrap(); // cấm
+}
+- **Cấm dùng `#[allow(...)]` trong test** – sửa warning giống production.
+- **Ngoại lệ duy nhất**: các bước setup không thể thất bại (ví dụ khởi tạo hằng số) và phải có comment.
+- **Rust**: Cấm sử dụng `#[allow(...)]`, `#![allow(...)]`, hoặc `#[expect(...)]` trong code production. Mọi warning phải được sửa bằng cách viết code đúng (ví dụ: xóa biến không dùng, xử lý `Result`, đặt đúng `pub`/`pub(crate)`).
+- **Zig**: Cấm dùng `@compileError` để bỏ qua warning. Phải sửa theo đúng cú pháp hoặc logic.
+- **Ada**: Cấm dùng `pragma Warnings (Off)` hoặc `pragma Suppress`. Phải sửa lỗi được cảnh báo.
+- **C++**: Cấm dùng `#pragma warning(disable: ...)` hoặc `__pragma(warning(disable: ...))` trong file gốc. Nếu cần thiết do thư viện bên thứ ba, phải đặt trong `#ifdef` có comment giải thích và chỉ áp dụng cho header đó.
+- **Hậu quả**: Nếu CI phát hiện bất kỳ `allow`/`disable` nào (trừ các trường hợp ngoại lệ đã được phê duyệt và ghi rõ trong file), build sẽ FAIL. AI phải tự sửa warning bằng cách viết code đúng, không được dùng "băng keo".
+
+## 0b. Nghiêm cấm xóa code do thiếu phụ thuộc giữa các phase (BẮT BUỘC)
+
+**Vấn đề:** AI có thể xóa các lệnh gọi hàm, import, hoặc toàn bộ module vì cho rằng phase sau chưa triển khai, dẫn đến mất cấu trúc và không thể tích hợp sau này.
+
+**Quy tắc cứng:**
+- **Không được xóa bất kỳ code nào** chỉ vì module/phụ thuộc chưa có ở phase hiện tại.
+- **Thay vào đó, phải giữ nguyên chữ ký** và sử dụng placeholder:
+  - **Rust:** `unimplemented!("Phase X sẽ implement hàm này")`
+  - **Zig:** `@panic("not implemented yet - Phase X")`
+  - **Ada:** `pragma Assert (False, "implement in Phase X");` hoặc `raise Program_Error;`
+  - **C++:** `throw std::logic_error("implement in Phase X");` (nếu exception được phép, hoặc `std::abort()`)
+- **Bắt buộc comment** ngay trên placeholder: `// TODO(Phase X): Liên kết với module Y khi Phase Z hoàn thành`
+- **Cấm xóa `use`/`import`/`with`** các module chưa tồn tại. Thay vào đó, giữ nguyên với `#[cfg(feature = "unstable")]` hoặc comment tạm thời, nhưng phải ghi rõ lý do.
+
+**Ví dụ đúng:**
+```rust
+// TODO(Phase 4): Gọi Windows Supervisor qua Transport Tunnel
+let result = windows_supervisor::handle_api_call(api_req)
+    .map_err(|e| anyhow!("Windows module not ready: {}", e))
+    .unwrap_or_else(|_| unimplemented!("Phase 4 will integrate Windows Supervisor"));
+0c. Quy định sửa file khi bị lỗi thiếu phụ thuộc (BẮT BUỘC)
+Nguyên tắc chung:
+Khi AI gặp lỗi biên dịch hoặc phân tích tĩnh liên quan đến thiếu module, thiếu import, thiếu hàm, thiếu kiểu (ví dụ: cannot find module, unresolved import, undefined function, no matching declaration), tuyệt đối không được xóa các dòng code gọi hoặc import. Thay vào đó, AI phải tạo hoặc sửa file để bổ sung định nghĩa thiếu dưới dạng stub/placeholder.
+
+Các tình huống cụ thể và cách sửa
+1. Thiếu module/file hoàn toàn (chưa tồn tại)
+Hành động: Tạo file mới tại đường dẫn đúng theo cấu trúc thư mục của dự án.
+
+Nội dung file: Toàn bộ các định nghĩa công khai (pub, pub(crate), export) cần thiết để thoả mãn các lệnh gọi đang có, mỗi hàm hoặc phương thức đều được implement bằng placeholder.
+
+Placeholder theo ngôn ngữ:
+
+Rust: unimplemented!("Phase X sẽ implement hàm này")
+
+Zig: @panic("not implemented yet - Phase X")
+
+Ada: pragma Assert (False, "implement in Phase X"); hoặc raise Program_Error;
+
+C++: throw std::logic_error("implement in Phase X"); (nếu exception được phép, nếu không thì std::abort())
+
+Bắt buộc có comment: // TODO(Phase X): Liên kết với module Y khi Phase Z hoàn thành (hoặc tương tự).
+
+2. File đã tồn tại nhưng thiếu hàm / phương thức / trait implementation
+Hành động: Mở file hiện có, thêm định nghĩa thiếu (hàm, phương thức, impl block) ngay tại vị trí thích hợp (theo thứ tự alphabet hoặc theo module).
+
+Nội dung thêm: Giống placeholder ở trên.
+
+Không được xóa các hàm khác đã có.
+
+3. Thiếu khai báo kiểu (struct, enum, type alias) cần cho FFI hoặc serialization
+Hành động: Thêm định nghĩa kiểu với #[repr(C)] (Rust) hoặc struct rỗng (C++) hoặc type tương ứng.
+
+Nội dung: Các trường dữ liệu có thể để trống hoặc đặt là dummy: u8, nhưng phải comment rõ là placeholder.
+
+4. Thiếu import / use / with (module chưa được khai báo trong file hiện tại)
+Hành động: Không được xóa dòng import. Thay vào đó, giữ nguyên dòng import và tạo module rỗng (nếu module chưa tồn tại) hoặc thêm pub use để export.
+
+Trường hợp đặc biệt: Nếu module chỉ tồn tại trong tương lai (Phase sau), có thể dùng conditional compilation:
+
+Rust: #[cfg(feature = "unstable")] kèm comment giải thích.
+
+C++: #ifdef FUTURE_PHASE ... #endif.
+
+Luôn kèm comment giải thích lý do và Phase dự kiến hoàn thành.
+
+5. Thiếu phụ thuộc trong file cấu hình build (Cargo.toml, build.zig, CMakeLists.txt, …)
+Hành động: Thêm dependency vào file cấu hình, nhưng phải ghi rõ version "0.0.0" hoặc path = "../stubs/..." và comment # TODO(Phase X): thay bằng dependency thật.
+
+Không được xóa các dependency khác.
+
+Quy trình thực hiện khi AI phát hiện lỗi thiếu phụ thuộc
+Dừng việc sinh code mới.
+
+Xác định chính xác module/hàm/kiểu nào bị thiếu, và Phase nào sẽ implement nó (dựa trên tài liệu thietke.txt hoặc yêu cầu người dùng).
+
+Tạo hoặc sửa file theo đúng quy tắc trên.
+
+Thêm comment TODO rõ ràng, bao gồm Phase chịu trách nhiệm.
+
+Kiểm tra lại rằng code sau khi sửa vẫn compile (với các placeholder).
+
+Báo cáo người dùng danh sách các file đã tạo/sửa và lý do.
+0d. Nghiêm cấm tạo lệnh giả / mock trái phép để build thành công (BẮT BUỘC)
+Vấn đề: AI có thể viết các hàm trả về giá trị mặc định (Ok(()), None, 0, String::new(), …) hoặc dùng todo!() mà không có kế hoạch thực sự, chỉ để làm hài lòng trình biên dịch hoặc vượt qua CI. Hành vi này che giấu lỗi thiết kế, dẫn đến tích hợp thất bại sau này.
+
+Các hành vi bị cấm tuyệt đối
+Trả về giá trị giả mặc định khi chưa biết logic thật
+
+Cấm: fn compute() -> u32 { 0 } (trong khi lẽ ra phải tính toán thật)
+
+Cấm: fn handle() -> Result<(), Error> { Ok(()) } (bỏ qua xử lý lỗi)
+
+Cấm: fn get_data() -> Vec<u8> { vec![] } (che giấu việc thiếu dữ liệu)
+
+Cho phép duy nhất: Sử dụng unimplemented!(), panic!(), todo!() có kèm TODO comment giải thích lý do và Phase sẽ implement.
+
+Dùng todo!() hoặc unimplemented!() không có comment
+
+Bắt buộc: Mỗi unimplemented!() phải có comment // TODO(Phase X): <nội dung> ngay trên dòng đó hoặc trong cùng block.
+ Các hành vi bị cấm tuyệt đối
+  Trả về giá trị giả mặc định khi chưa biết logic thật
++ - Cấm: `fn compute() -> Result<()> { Ok(()) }` (bỏ qua xử lý lỗi)
++ - Cấm: `fn compute() -> Vec<u8> { vec![] }` (che giấu việc thiếu dữ liệu)
++ - Cấm: `fn compute() -> Option<T> { None }` (che giấu lỗi)
++ - Cấm: `fn compute() -> u32 { 0 }` (trả về 0 giả)
+- - Cấm: fn compute() -> u32 { 0 } (trong khi lẽ ra phải tính toán thật)
+- - Cấm: fn handle() -> Result<(), Error> { Ok(()) } (bỏ qua xử lý lỗi)
+- - Cấm: fn get_data() -> Vec<u8> { vec![] } (che giấu việc thiếu dữ liệu)
++ - Cấm dùng `unwrap_or()`, `unwrap_or_else()`, `unwrap_or_default()` trong production (che giấu lỗi). Nếu thực sự cần giá trị mặc định, phải dùng `match` xử lý rõ ràng và ghi log.
+Ví dụ đúng:
+
+rust
+// TODO(Phase 4): Gọi Windows Supervisor qua Transport Tunnel
+unimplemented!("Phase 4 will integrate Windows Supervisor")
+Sử dụng conditional compilation (#[cfg(test)], #[cfg(debug_assertions)], …) để thay đổi logic trong production
+
+Cấm: Viết một phiên bản mock chỉ dùng trong test nhưng lại ảnh hưởng đến code production (ví dụ: #[cfg(not(test))] bỏ qua logic quan trọng).
+
+Ngoại lệ: Chỉ được dùng #[cfg(test)] cho test helpers hoặc mocks dùng riêng trong test, không được xuất hiện trong thư viện production trừ khi được người dùng cho phép rõ ràng.
+
+Trả về Ok(()) hay Ok(Default::default()) cho các hàm xử lý lỗi
+
+Cấm: Mọi hàm trả về Result không được trả về Ok(()) nếu chưa có logic thật.
+
+Thay vào đó: Dùng unimplemented!() hoặc Err(anyhow!("not implemented")) nếu muốn biểu diễn lỗi tạm thời (nhưng phải có TODO).
+
+Tạo std::sync::Mutex::new(()) giả hay dùng RwLock không cần thiết
+
+Cấm: Khởi tạo các đối tượng đồng bộ phức tạp mà không có lý do rõ ràng, chỉ để qua mặt borrow checker.
+
+Cho phép: Sử dụng () hoặc AtomicBool nếu thực sự là placeholder, nhưng phải ghi rõ TODO.
+
+Viết hàm extern "C" export mà thân hàm rỗng hoặc chỉ trả về 0
+
+Cấm: Xuất C API mà không có logic, vì các module khác gọi vào sẽ nhận hành vi không xác định.
+
+Bắt buộc: Thân hàm phải chứa abort() (C++) hoặc panic!("not implemented") (Rust) hoặc @panic("...") (Zig), kèm TODO.
++ ## 0e. Cấm dùng Mutex/RwLock với HashMap/HashSet trong production (BẮT BUỘC)
++ 
++ **Nguyên tắc:** Trong luồng xử lý chính, tuyệt đối không dùng `Mutex<HashMap>` hoặc `RwLock<HashMap>`.
++ **Thay thế bắt buộc:** Dùng `DashMap` (cho truy cập đồng thời), `evmap` (cho eventual consistency), hoặc `ringbuf` (cho hàng đợi SPSC).
++ **Lý do:** `Mutex/RwLock` gây contention cao, giảm hiệu năng trên multi‑core.
++ **Hậu quả:** CI sẽ fail nếu phát hiện pattern `Mutex<HashMap<` hoặc `RwLock<HashMap<` trong code production.
+ /home/ToHung/LinusAiOS/rust/transport_tunnel/src/encapsulation/mod.rs:62 - unsafe thiếu comment // SAFETY: ...
+  /home/ToHung/LinusAiOS/rust/transport_tunnel/src/io_uring/wrapper.rs:8 - unsafe thiếu comment // SAFETY: ...
+  /home/ToHung/LinusAiOS/rust/transport_tunnel/src/shm/region.rs:26 - unsafe thiếu comment // SAFETY: ...
+  /home/ToHung/LinusAiOS/rust/transport_tunnel/src/shm/region.rs:40 - unsafe thiếu comment // SAFETY: ...
+  /home/ToHung/LinusAiOS/rust/browser_ffi/src/supervisor/browser_supervisor.rs:32 - unsafe thiếu comment // SAFETY: ...
+  /home/ToHung/LinusAiOS/rust/database_tunnel/src/merkle.rs - None giả
+  /home/ToHung/LinusAiOS/rust/database_tunnel/src/merkle.rs - None giả
+  /home/ToHung/LinusAiOS/rust/database_tunnel/src/merkle.rs - None giả
+  /home/ToHung/LinusAiOS/rust/windows_module/src/assistant/windows_model_manager.rs - None giả
+  /home/ToHung/LinusAiOS/rust/windows_module/src/assistant/windows_model_manager.rs - None giả
+  /home/ToHung/LinusAiOS/rust/windows_module/src/assistant/windows_gpu_backend.rs - None giả
+  /home/ToHung/LinusAiOS/rust/windows_module/src/executor/windows_kvm_executor.rs - None giả
+  /home/ToHung/LinusAiOS/rust/windows_module/src/executor/windows_kvm_executor.rs - None giả
+  /home/ToHung/LinusAiOS/rust/windows_module/src/executor/windows_kvm_executor.rs - None giả
+  /home/ToHung/LinusAiOS/rust/windows_module/src/executor/windows_kvm_executor.rs - None giả
+  /home/ToHung/LinusAiOS/rust/windows_module/src/executor/windows_kvm_executor.rs - None giả
+  /home/ToHung/LinusAiOS/rust/windows_module/src/executor/windows_kvm_executor.rs - None giả
+  /home/ToHung/LinusAiOS/rust/windows_module/src/executor/windows_kvm_executor.rs - None giả
+  /home/ToHung/LinusAiOS/rust/windows_module/src/executor/windows_kvm_executor.rs - None giả
+  /home/ToHung/LinusAiOS/rust/windows_module/src/executor/windows_kvm_executor.rs - None giả
+  /home/ToHung/LinusAiOS/rust/windows_module/src/executor/windows_kvm_executor.rs - None giả
+  /home/ToHung/LinusAiOS/rust/windows_module/src/executor/windows_kvm_executor.rs - None giả
+  /home/ToHung/LinusAiOS/rust/windows_module/src/executor/windows_kvm_executor.rs - None giả
+  /home/ToHung/LinusAiOS/rust/windows_module/src/executor/windows_wine_executor.rs - None giả
+  /home/ToHung/LinusAiOS/rust/windows_module/src/executor/windows_wine_executor.rs - None giả
+  /home/ToHung/LinusAiOS/rust/windows_module/src/executor/windows_wine_executor.rs - None giả
+  /home/ToHung/LinusAiOS/rust/windows_module/src/executor/windows_wine_executor.rs - None giả
+  /home/ToHung/LinusAiOS/rust/windows_module/src/executor/windows_orchestrator.rs - None giả
+  /home/ToHung/LinusAiOS/rust/windows_module/src/executor/windows_orchestrator.rs - None giả
+  /home/ToHung/LinusAiOS/rust/windows_module/src/executor/windows_orchestrator.rs - None giả
+  /home/ToHung/LinusAiOS/rust/windows_module/src/executor/windows_orchestrator.rs - None giả
+  /home/ToHung/LinusAiOS/rust/windows_module/src/executor/windows_orchestrator.rs - None giả
+  /home/ToHung/LinusAiOS/rust/windows_module/src/executor/windows_orchestrator.rs - None giả
+  /home/ToHung/LinusAiOS/rust/windows_module/src/executor/windows_orchestrator.rs - None giả
+  /home/ToHung/LinusAiOS/rust/windows_module/src/executor/windows_orchestrator.rs - None giả
+  /home/ToHung/LinusAiOS/rust/windows_module/src/executor/windows_orchestrator.rs - None giả
+  /home/ToHung/LinusAiOS/rust/windows_module/src/executor/windows_kvm_fallback.rs - None giả
+  /home/ToHung/LinusAiOS/rust/windows_module/src/executor/windows_kvm_fallback.rs - None giả
+  /home/ToHung/LinusAiOS/rust/windows_module/src/executor/windows_kvm_fallback.rs - None giả
+  /home/ToHung/LinusAiOS/rust/windows_module/src/executor/windows_kvm_fallback.rs - None giả
+  /home/ToHung/LinusAiOS/rust/windows_module/src/executor/windows_kvm_fallback.rs - None giả
+  /home/ToHung/LinusAiOS/rust/windows_module/src/executor/windows_kvm_fallback.rs - None giả
+  /home/ToHung/LinusAiOS/rust/windows_module/src/hybrid/windows_manager.rs:55 - unsafe thiếu comment // SAFETY: ...
+  /home/ToHung/LinusAiOS/rust/windows_module/src/ffi/libvirt/bindings.rs:5 - FFI extern "C" cần bọc catch_unwind
+  /home/ToHung/LinusAiOS/rust/sih/src/hardware/sih_hardware_collector.rs - None giả
+  /home/ToHung/LinusAiOS/rust/sih/src/dkss/knowledge_ingestion.rs - vec![] giả
+  /home/ToHung/LinusAiOS/rust/sih/src/dkss/knowledge_ingestion.rs - None giả
+  /home/ToHung/LinusAiOS/rust/sih/src/dkss/knowledge_ingestion.rs - None giả
+  /home/ToHung/LinusAiOS/rust/sih/src/dkss/knowledge_ingestion.rs - None giả
+  /home/ToHung/LinusAiOS/rust/sih/src/dkss/knowledge_ingestion.rs - None giả
+  /home/ToHung/LinusAiOS/rust/sih/src/dkss/knowledge_ingestion.rs - None giả
+  /home/ToHung/LinusAiOS/rust/sih/src/dkss/knowledge_ingestion.rs - None giả
+  /home/ToHung/LinusAiOS/rust/sih/src/dkss/source_fetcher.rs:71 - Gọi shell trực tiếp (cấm)
+  /home/ToHung/LinusAiOS/rust/sih/src/dkss/source_fetcher.rs:107 - Gọi shell trực tiếp (cấm)
+  /home/ToHung/LinusAiOS/rust/sih/src/dkss/source_fetcher.rs - vec![] giả
+  /home/ToHung/LinusAiOS/rust/sih/src/ai/sih_assistant.rs - None giả
+  /home/ToHung/LinusAiOS/rust/sih/src/ai/sih_assistant.rs - None giả
+  /home/ToHung/LinusAiOS/rust/adaptive_backend/src/supervisor/failover_trigger.rs - vec![] giả
+  /home/ToHung/LinusAiOS/rust/health_tunnel/src/ledger.rs - vec![] giả
+  /home/ToHung/LinusAiOS/rust/health_tunnel/src/ledger.rs - None giả
+  /home/ToHung/LinusAiOS/rust/health_tunnel/src/snapshot.rs - None giả
+  /home/ToHung/LinusAiOS/rust/linux_module/src/tensor/pool.rs:204 - unsafe thiếu comment // SAFETY: ...
+  /home/ToHung/LinusAiOS/rust/linux_module/src/tensor/pool.rs:288 - unsafe thiếu comment // SAFETY: ...
+  /home/ToHung/LinusAiOS/rust/linux_module/src/tensor/pool.rs:332 - unsafe thiếu comment // SAFETY: ...
+  /home/ToHung/LinusAiOS/rust/linux_module/src/tensor/pool.rs:386 - unsafe thiếu comment // SAFETY: ...
+  /home/ToHung/LinusAiOS/rust/linux_module/src/tensor/pool.rs:419 - unsafe thiếu comment // SAFETY: ...
+  /home/ToHung/LinusAiOS/rust/linux_module/src/tensor/pool.rs:431 - unsafe thiếu comment // SAFETY: ...
+  /home/ToHung/LinusAiOS/rust/linux_module/src/tensor/pool.rs - vec![] giả
+  /home/ToHung/LinusAiOS/rust/linux_module/src/tensor/pool.rs - None giả
+  /home/ToHung/LinusAiOS/rust/linux_module/src/tensor/pool.rs - None giả
+  /home/ToHung/LinusAiOS/rust/linux_module/src/tensor/pool.rs - None giả
+  /home/ToHung/LinusAiOS/rust/linux_module/src/tensor/pool.rs - None giả
+  /home/ToHung/LinusAiOS/rust/linux_module/src/tensor/pool.rs - None giả
+  /home/ToHung/LinusAiOS/rust/linux_module/src/tensor/types.rs - None giả
+  /home/ToHung/LinusAiOS/rust/linux_module/src/memory/linux_pinned_app_manager.rs - None giả
+  /home/ToHung/LinusAiOS/rust/linux_module/src/ai/linux_assistant.rs - None giả
+  /home/ToHung/LinusAiOS/rust/linux_module/src/ai/linux_assistant.rs - None giả
+  /home/ToHung/LinusAiOS/rust/linux_module/src/ai/linux_assistant.rs - None giả
+  /home/ToHung/LinusAiOS/rust/linux_module/src/ai/linux_assistant.rs - None giả
+  /home/ToHung/LinusAiOS/rust/linux_module/src/main_component/snapshot_manager.rs - vec![] giả
+  /home/ToHung/LinusAiOS/rust/linux_module/src/main_component/snapshot_manager.rs - vec![] giả
+  /home/ToHung/LinusAiOS/rust/linux_module/src/main_component/process_manager.rs - vec![] giả
+  /home/ToHung/LinusAiOS/rust/linux_module/src/main_component/process_manager.rs - None giả
+  /home/ToHung/LinusAiOS/rust/linux_module/src/main_component/process_manager.rs - None giả
+  /home/ToHung/LinusAiOS/rust/linux_module/src/main_component/process_manager.rs - None giả
+  /home/ToHung/LinusAiOS/rust/linux_module/src/main_component/hardware_monitor.rs:62 - unsafe thiếu comment // SAFETY: ...
+  /home/ToHung/LinusAiOS/rust/linux_module/src/supervisor/linux_risk_engine.rs - None giả
+  /home/ToHung/LinusAiOS/rust/linux_module/src/supervisor/linux_risk_engine.rs - None giả
+  /home/ToHung/LinusAiOS/rust/scc/src/idl_registry/ffi.rs:55 - unsafe thiếu comment // SAFETY: ...
+  /home/ToHung/LinusAiOS/rust/scc/src/idl_registry/ffi.rs - return 0 giả
+  /home/ToHung/LinusAiOS/rust/scc/src/crypto/spark_bindings.rs:1 - FFI extern "C" cần bọc catch_unwind
+
+============================================================
+🔴 LỖI TRONG CODE TEST
+============================================================
+  /home/ToHung/LinusAiOS/rust/system_host/tests/assistant_support_monitor_tests.rs:247 - .expect(
+  /home/ToHung/LinusAiOS/rust/system_host/tests/full_integration_tests.rs:14 - Gọi shell trực tiếp (cấm)
+  /home/ToHung/LinusAiOS/rust/system_host/tests/full_integration_tests.rs:34 - Gọi shell trực tiếp (cấm)
+  /home/ToHung/LinusAiOS/rust/system_host/tests/full_integration_tests.rs:45 - Gọi shell trực tiếp (cấm)
+  /home/ToHung/LinusAiOS/rust/system_host/src/failover/host_failover_manager.rs - vec![] giả
+  /home/ToHung/LinusAiOS/rust/system_host/src/failover/host_failover_manager.rs - None giả
+  /home/ToHung/LinusAiOS/rust/system_host/src/failover/host_failover_manager.rs - None giả
+  /home/ToHung/LinusAiOS/rust/system_host/src/assistant/host_assistant.rs - None giả
+  /home/ToHung/LinusAiOS/rust/system_host/src/assistant/host_assistant.rs - None giả
+  /home/ToHung/LinusAiOS/rust/system_host/src/assistant/host_assistant.rs - None giả
+  /home/ToHung/LinusAiOS/rust/system_host/src/assistant/host_assistant.rs - None giả
+  /home/ToHung/LinusAiOS/rust/system_host/src/assistant/host_assistant.rs - None giả
+  /home/ToHung/LinusAiOS/rust/system_host/src/assistant/host_assistant.rs - None giả
+  /home/ToHung/LinusAiOS/rust/system_host/src/assistant/host_assistant.rs - None giả
+  /home/ToHung/LinusAiOS/rust/system_host/src/assistant/host_snn_processor.rs - None giả
+  /home/ToHung/LinusAiOS/rust/system_host/src/assistant/host_snn_processor.rs - None giả
+  /home/ToHung/LinusAiOS/rust/system_host/src/scheduler/host_micro_scheduler.rs - None giả
+  /home/ToHung/LinusAiOS/rust/system_host/src/supervision/support_monitor.rs - vec![] giả
+  /home/ToHung/LinusAiOS/rust/system_host/src/supervision/support_monitor.rs - None giả
+  /home/ToHung/LinusAiOS/rust/system_host/src/supervision/support_monitor.rs - None giả
+  /home/ToHung/LinusAiOS/rust/health_master_tunnel/src/consensus.rs - vec![] giả
+  /home/ToHung/LinusAiOS/rust/health_master_tunnel/src/consensus.rs - None giả
+  /home/ToHung/LinusAiOS/rust/health_master_tunnel/src/lib.rs - None giả
+  /home/ToHung/LinusAiOS/rust/health_master_tunnel/src/lib.rs - None giả
+  /home/ToHung/LinusAiOS/rust/health_master_tunnel/src/lib.rs - None giả
+  /home/ToHung/LinusAiOS/rust/health_master_tunnel/src/lib.rs - None giả
+  /home/ToHung/LinusAiOS/rust/health_master_tunnel/src/lib.rs - None giả
+  /home/ToHung/LinusAiOS/rust/health_master_tunnel/src/lib.rs - None giả
+  /home/ToHung/LinusAiOS/rust/common/src/type_registry/registry.rs - vec![] giả
+  /home/ToHung/LinusAiOS/rust/common/src/type_registry/registry.rs - vec![] giả
+  /home/ToHung/LinusAiOS/rust/common/src/ring_buffer/spsc.rs:35 - unsafe thiếu comment // SAFETY: ...
+  /home/ToHung/LinusAiOS/rust/common/src/ring_buffer/spsc.rs:53 - unsafe thiếu comment // SAFETY: ...
+  /home/ToHung/LinusAiOS/rust/common/src/ring_buffer/spsc.rs - None giả
+  /home/ToHung/LinusAiOS/rust/windows_module/tests/windows_main_tests.rs - vec![] giả
+  /home/ToHung/LinusAiOS/rust/windows_module/src/mapper/api_mapper.rs - vec![] giả
+  /home/ToHung/LinusAiOS/rust/windows_module/src/mapper/api_mapper.rs - vec![] giả
+  /home/ToHung/LinusAiOS/rust/windows_module/src/mapper/api_mapper.rs - vec![] giả
+  /home/ToHung/LinusAiOS/rust/windows_module/src/mapper/api_mapper.rs - vec![] giả
+  /home/ToHung/LinusAiOS/rust/windows_module/src/mapper/api_mapper.rs - vec![] giả
+  /home/ToHung/LinusAiOS/rust/windows_module/src/mapper/api_mapper.rs - vec![] giả
+  /home/ToHung/LinusAiOS/rust/windows_module/src/mapper/api_mapper.rs - None giả
+  /home/ToHung/LinusAiOS/rust/windows_module/src/mapper/api_mapper.rs - None giả
+  /home/ToHung/LinusAiOS/rust/windows_module/src/mapper/api_mapper.rs - None giả
+  /home/ToHung/LinusAiOS/rust/windows_module/src/profiling/windows_api_profiler.rs - vec![] giả
+  /home/ToHung/LinusAiOS/rust/windows_module/src/profiling/windows_api_profiler.rs - None giả
+  /home/ToHung/LinusAiOS/rust/windows_module/src/profiling/windows_api_profiler.rs - None giả
+  /home/ToHung/LinusAiOS/rust/windows_module/src/profiling/windows_api_profiler.rs - None giả
+  /home/ToHung/LinusAiOS/rust/windows_module/src/profiling/windows_api_profiler.rs - None giả
+  /home/ToHung/LinusAiOS/rust/windows_module/src/profiling/windows_api_profiler.rs - None giả
+  /home/ToHung/LinusAiOS/rust/windows_module/src/profiling/windows_api_profiler.rs - None giả
+  /home/ToHung/LinusAiOS/rust/windows_module/src/assistant/windows_snn_processor.rs - None giả
+  /home/ToHung/LinusAiOS/rust/windows_module/src/assistant/windows_snn_processor.rs - None giả
+  /home/ToHung/LinusAiOS/rust/windows_module/src/assistant/windows_lnn_predictor.rs - vec![] giả
+  /home/ToHung/LinusAiOS/rust/windows_module/src/assistant/windows_lnn_predictor.rs - vec![] giả
+  /home/ToHung/LinusAiOS/rust/windows_module/src/assistant/windows_lnn_predictor.rs - vec![] giả
+  /home/ToHung/LinusAiOS/rust/windows_module/src/assistant/windows_assistant.rs - vec![] giả
+  /home/ToHung/LinusAiOS/rust/windows_module/src/assistant/windows_assistant.rs - None giả
+  /home/ToHung/LinusAiOS/rust/windows_module/src/assistant/windows_assistant.rs - None giả
+  /home/ToHung/LinusAiOS/rust/windows_module/src/assistant/windows_assistant.rs - None giả
+  /home/ToHung/LinusAiOS/rust/windows_module/src/assistant/windows_assistant.rs - None giả
+  /home/ToHung/LinusAiOS/rust/windows_module/src/assistant/windows_assistant.rs - None giả
+  /home/ToHung/LinusAiOS/rust/windows_module/src/assistant/windows_assistant.rs - None giả
+  /home/ToHung/LinusAiOS/rust/windows_module/src/assistant/windows_assistant.rs - None giả
+  /home/ToHung/LinusAiOS/rust/windows_module/src/assistant/windows_rl_policy.rs - vec![] giả
+  /home/ToHung/LinusAiOS/rust/windows_module/src/assistant/windows_rl_policy.rs - None giả
+  /home/ToHung/LinusAiOS/rust/windows_module/src/assistant/windows_rl_policy.rs - None giả
+  /home/ToHung/LinusAiOS/rust/windows_module/src/assistant/windows_rl_policy.rs - None giả
+  /home/ToHung/LinusAiOS/rust/windows_module/src/assistant/windows_rl_policy.rs - None giả
+  /home/ToHung/LinusAiOS/rust/windows_module/src/assistant/windows_rl_policy.rs - None giả
+  /home/ToHung/LinusAiOS/rust/windows_module/src/assistant/windows_rl_policy.rs - None giả
+  /home/ToHung/LinusAiOS/rust/windows_module/src/assistant/windows_rl_policy.rs - None giả
+  /home/ToHung/LinusAiOS/rust/windows_module/src/assistant/windows_rl_policy.rs - None giả
+  /home/ToHung/LinusAiOS/rust/windows_module/src/assistant/windows_rl_policy.rs - None giả
+  /home/ToHung/LinusAiOS/rust/windows_module/src/assistant/windows_rl_policy.rs - None giả
+  /home/ToHung/LinusAiOS/rust/windows_module/src/assistant/windows_rl_policy.rs - None giả
+  /home/ToHung/LinusAiOS/rust/windows_module/src/assistant/windows_rl_policy.rs - None giả
+  /home/ToHung/LinusAiOS/rust/windows_module/src/executor/windows_poda.rs - vec![] giả
+  /home/ToHung/LinusAiOS/rust/windows_module/src/executor/windows_poda.rs - None giả
+  /home/ToHung/LinusAiOS/rust/windows_module/src/executor/windows_poda.rs - None giả
+  /home/ToHung/LinusAiOS/rust/windows_module/src/executor/windows_poda.rs - None giả
+  /home/ToHung/LinusAiOS/rust/windows_module/src/executor/windows_poda.rs - None giả
+  /home/ToHung/LinusAiOS/rust/windows_module/src/executor/windows_poda.rs - None giả
+  /home/ToHung/LinusAiOS/rust/windows_module/src/executor/windows_memory_tiering.rs - vec![] giả
+  /home/ToHung/LinusAiOS/rust/windows_module/src/executor/windows_memory_tiering.rs - vec![] giả
+  /home/ToHung/LinusAiOS/rust/windows_module/src/executor/windows_memory_tiering.rs - None giả
+  /home/ToHung/LinusAiOS/rust/windows_module/src/executor/windows_memory_tiering.rs - None giả
+  /home/ToHung/LinusAiOS/rust/windows_module/src/translation/windows_cache_manager.rs:58 - unsafe thiếu comment // SAFETY: ...
+  /home/ToHung/LinusAiOS/rust/windows_module/src/translation/windows_cache_manager.rs - None giả
+  /home/ToHung/LinusAiOS/rust/windows_module/src/translation/windows_cache_manager.rs - None giả
+  /home/ToHung/LinusAiOS/rust/windows_module/src/translation/windows_cache_manager.rs - None giả
+  /home/ToHung/LinusAiOS/rust/windows_module/src/main/windows_support.rs - vec![] giả
+  /home/ToHung/LinusAiOS/rust/windows_module/src/main/windows_support.rs - None giả
+  /home/ToHung/LinusAiOS/rust/windows_module/src/main/windows_support.rs - None giả
+  /home/ToHung/LinusAiOS/rust/windows_module/src/jit/windows_compiler.rs - vec![] giả
+  /home/ToHung/LinusAiOS/rust/windows_module/src/jit/windows_compiler.rs - None giả
+  /home/ToHung/LinusAiOS/rust/adaptive_backend/src/assistant/adaptive_lnn_predictor.rs - None giả
+  /home/ToHung/LinusAiOS/rust/adaptive_backend/src/assistant/adaptive_lnn_predictor.rs - None giả
+  /home/ToHung/LinusAiOS/rust/adaptive_backend/src/assistant/adaptive_assistant.rs - vec![] giả
+  /home/ToHung/LinusAiOS/rust/adaptive_backend/src/assistant/adaptive_assistant.rs - None giả
+  /home/ToHung/LinusAiOS/rust/adaptive_backend/src/assistant/adaptive_rl_policy.rs:76 - .unwrap_or(
+  /home/ToHung/LinusAiOS/rust/adaptive_backend/src/assistant/adaptive_rl_policy.rs - vec![] giả
+  /home/ToHung/LinusAiOS/rust/adaptive_backend/src/api/routes.rs:152 - .unwrap_or(
+  /home/ToHung/LinusAiOS/rust/adaptive_backend/src/api/routes.rs:153 - .unwrap_or(
+  /home/ToHung/LinusAiOS/rust/master_tunnel/src/consensus.rs:166 - .unwrap_or_default()
+  /home/ToHung/LinusAiOS/rust/master_tunnel/src/consensus.rs:167 - .unwrap_or_default()
+  /home/ToHung/LinusAiOS/rust/master_tunnel/src/consensus.rs:168 - .unwrap_or_default()
+  /home/ToHung/LinusAiOS/rust/master_tunnel/src/consensus.rs:212 - .unwrap_or_default()
+  /home/ToHung/LinusAiOS/rust/master_tunnel/src/consensus.rs:213 - .unwrap_or_default()
+  /home/ToHung/LinusAiOS/rust/health_tunnel/src/lib.rs - vec![] giả
+  /home/ToHung/LinusAiOS/rust/health_tunnel/src/lib.rs - vec![] giả
+  /home/ToHung/LinusAiOS/rust/health_tunnel/src/lib.rs - vec![] giả
+  /home/ToHung/LinusAiOS/rust/child_tunnel/src/lib.rs - None giả
+  /home/ToHung/LinusAiOS/rust/child_tunnel/src/registry/component_registry.rs - vec![] giả
+  /home/ToHung/LinusAiOS/rust/child_tunnel/src/registry/component_registry.rs - None giả
+  /home/ToHung/LinusAiOS/rust/child_tunnel/src/registry/component_registry.rs - None giả
+  /home/ToHung/LinusAiOS/rust/child_tunnel/src/registry/component_registry.rs - None giả
+  /home/ToHung/LinusAiOS/rust/child_tunnel/src/registry/component_registry.rs - None giả
+  /home/ToHung/LinusAiOS/rust/android_module/src/android_assistant/mod.rs - None giả
+  /home/ToHung/LinusAiOS/rust/android_module/src/android_container/android_executor_orchestrator.rs - vec![] giả
+  /home/ToHung/LinusAiOS/rust/android_module/src/android_main/android_snapshot_integration.rs - vec![] giả
+  /home/ToHung/LinusAiOS/rust/android_module/src/android_main/android_snapshot_integration.rs - vec![] giả
+  /home/ToHung/LinusAiOS/rust/android_module/src/android_main/android_snapshot_integration.rs - vec![] giả
+  /home/ToHung/LinusAiOS/rust/android_module/src/android_main/android_snapshot_integration.rs - vec![] giả
+  /home/ToHung/LinusAiOS/rust/android_module/src/android_main/android_snapshot_integration.rs - vec![] giả
+  /home/ToHung/LinusAiOS/rust/linux_module/src/zig_bindings/criu.rs:158 - unsafe thiếu comment // SAFETY: ...
+  /home/ToHung/LinusAiOS/rust/linux_module/src/zig_bindings/iouring.rs:71 - unsafe thiếu comment // SAFETY: ...
+  /home/ToHung/LinusAiOS/rust/linux_module/src/zig_bindings/cpu_pinning.rs:145 - unsafe thiếu comment // SAFETY: ...
+  /home/ToHung/LinusAiOS/rust/linux_module/src/zig_bindings/cpu_pinning.rs:157 - unsafe thiếu comment // SAFETY: ...
+  /home/ToHung/LinusAiOS/rust/linux_module/src/zig_bindings/cpu_pinning.rs:170 - unsafe thiếu comment // SAFETY: ...
+  /home/ToHung/LinusAiOS/rust/linux_module/src/zig_bindings/cpu_pinning.rs:186 - unsafe thiếu comment // SAFETY: ...
+  /home/ToHung/LinusAiOS/rust/linux_module/src/zig_bindings/cpu_pinning.rs:198 - unsafe thiếu comment // SAFETY: ...
+  /home/ToHung/LinusAiOS/rust/linux_module/src/zig_bindings/cpu_pinning.rs:210 - unsafe thiếu comment // SAFETY: ...
+  /home/ToHung/LinusAiOS/rust/linux_module/src/zig_bindings/cpu_pinning.rs:222 - unsafe thiếu comment // SAFETY: ...
+  /home/ToHung/LinusAiOS/rust/linux_module/src/zig_bindings/snn_ebpf.rs:260 - unsafe thiếu comment // SAFETY: ...
+  /home/ToHung/LinusAiOS/rust/linux_module/src/zig_bindings/snn_ebpf.rs - None giả
+  /home/ToHung/LinusAiOS/rust/linux_module/src/zig_bindings/snn_ebpf.rs - None giả
+  /home/ToHung/LinusAiOS/rust/linux_module/src/zig_bindings/snn_ebpf.rs - None giả
+  /home/ToHung/LinusAiOS/rust/linux_module/src/zig_bindings/snn_ebpf.rs - None giả
+  /home/ToHung/LinusAiOS/rust/linux_module/src/zig_bindings/snn_ebpf.rs - return 0 giả
+  /home/ToHung/LinusAiOS/rust/linux_module/src/zig_bindings/ebpf_loader.rs:58 - unsafe thiếu comment // SAFETY: ...
+  /home/ToHung/LinusAiOS/rust/linux_module/src/ai/linux_snn_processor.rs - None giả
+  /home/ToHung/LinusAiOS/rust/linux_module/src/ai/linux_rl_policy.rs - None giả
+  /home/ToHung/LinusAiOS/rust/linux_module/src/ai/linux_rl_policy.rs - None giả
+  /home/ToHung/LinusAiOS/rust/linux_module/src/ai/linux_rl_policy.rs - None giả
+  /home/ToHung/LinusAiOS/rust/linux_module/src/ai/linux_rl_policy.rs - None giả
+  /home/ToHung/LinusAiOS/rust/linux_module/src/ai/linux_rl_policy.rs - None giả
+  /home/ToHung/LinusAiOS/rust/linux_module/src/ai/linux_rl_policy.rs - None giả
+  /home/ToHung/LinusAiOS/rust/linux_module/src/ai/linux_rl_policy.rs - None giả
+  /home/ToHung/LinusAiOS/rust/linux_module/src/ai/linux_rl_policy.rs - None giả
+  /home/ToHung/LinusAiOS/rust/linux_module/src/ai/linux_lnn_predictor.rs - vec![] giả
+  /home/ToHung/LinusAiOS/rust/linux_module/src/ai/linux_lnn_predictor.rs - vec![] giả
+  /home/ToHung/LinusAiOS/rust/linux_module/src/ai/linux_gpu_monitor.rs - vec![] giả
+  /home/ToHung/LinusAiOS/rust/linux_module/src/ai/linux_gpu_monitor.rs - vec![] giả
+  /home/ToHung/LinusAiOS/rust/linux_module/src/main_component/linux_main.rs - None giả
+  /home/ToHung/LinusAiOS/rust/linux_module/src/main_component/linux_main.rs - None giả
+  /home/ToHung/LinusAiOS/rust/linux_module/src/main_component/linux_main.rs - None giả
+  /home/ToHung/LinusAiOS/rust/linux_module/src/main_component/linux_main.rs - None giả
+  /home/ToHung/LinusAiOS/rust/linux_module/src/main_component/linux_main.rs - None giả
+  /home/ToHung/LinusAiOS/rust/linux_module/src/main_component/linux_main.rs - None giả
+  /home/ToHung/LinusAiOS/rust/linux_module/src/main_component/linux_main.rs - None giả
+  /home/ToHung/LinusAiOS/rust/scc/src/validator/intent.rs - vec![] giả
+  /home/ToHung/LinusAiOS/rust/scc/src/validator/intent.rs - vec![] giả
+  /home/ToHung/LinusAiOS/rust/scc/src/validator/intent.rs - vec![] giả
+  /home/ToHung/LinusAiOS/rust/scc/src/validator/intent.rs - None giả
+  /home/ToHung/LinusAiOS/rust/scc/src/translation/engine.rs:28 - unsafe thiếu comment // SAFETY: ...
+  /home/ToHung/LinusAiOS/rust/scc/src/blockchain/light_client.rs - None giả
+  /home/ToHung/LinusAiOS/rust/scc/src/idl_registry/mod.rs:36 - unsafe thiếu comment // SAFETY: ...
+  /home/ToHung/LinusAiOS/rust/scc/src/crypto/ffi.rs:126 - unsafe thiếu comment // SAFETY: ...
+  /home/ToHung/LinusAiOS/rust/scc/src/crypto/ffi.rs:160 - unsafe thiếu comment // SAFETY: ...

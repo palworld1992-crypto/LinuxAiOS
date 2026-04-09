@@ -44,8 +44,31 @@ impl HardwareMonitor {
     }
 
     pub fn gpu_info(&self) -> Vec<String> {
-        // TODO: implement GPU detection via nvml or sysfs
-        vec![]
+        // Phase 4: GPU detection using sysfs (Linux only)
+        let mut gpus = Vec::new();
+
+        if let Ok(dir) = std::fs::read_dir("/sys/class/drm") {
+            for entry in dir.flatten() {
+                let path = entry.path();
+                if let Some(name) = path.file_name().and_then(|n| n.to_str()) {
+                    if name.starts_with("card") {
+                        let device_path = path.join("device");
+                        if device_path.exists() {
+                            if let Ok(vendor_file) =
+                                std::fs::read_to_string(device_path.join("vendor"))
+                            {
+                                let vendor = vendor_file.trim();
+                                if vendor != "0x0000" {
+                                    gpus.push(format!("GPU: {} at {}", vendor, name));
+                                }
+                            }
+                        }
+                    }
+                }
+            }
+        }
+
+        gpus
     }
 
     /// Ghi trạng thái vào shared memory
@@ -59,6 +82,9 @@ impl HardwareMonitor {
             let data = format!("cpu={:.2},mem={}/{}", cpu, mem_used, mem_total);
             let bytes = data.as_bytes();
             if bytes.len() <= shm.len() {
+                // SAFETY: shm.as_mut_ptr() points to a valid SHM region of size shm.len().
+                // bytes.as_ptr() points to valid data of bytes.len() bytes.
+                // The length check above guarantees the copy stays within bounds.
                 unsafe {
                     std::ptr::copy_nonoverlapping(bytes.as_ptr(), shm.as_mut_ptr(), bytes.len());
                 }

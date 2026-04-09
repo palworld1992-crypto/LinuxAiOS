@@ -1,38 +1,36 @@
 //! Degraded mode for Windows Module
 
-use parking_lot::RwLock;
+use std::sync::atomic::{AtomicBool, Ordering};
 use tracing::info;
 
 pub struct WindowsDegradedMode {
-    active: RwLock<bool>,
-}
-
-impl Default for WindowsDegradedMode {
-    fn default() -> Self {
-        Self::new()
-    }
+    active: AtomicBool,
 }
 
 impl WindowsDegradedMode {
     pub fn new() -> Self {
         Self {
-            active: RwLock::new(false),
+            active: AtomicBool::new(false),
         }
     }
 
     pub fn enter(&self) {
-        let mut active = self.active.write();
-        *active = true;
+        self.active.store(true, Ordering::Relaxed);
         info!("Windows Module entered degraded mode");
     }
 
     pub fn exit(&self) {
-        let mut active = self.active.write();
-        *active = false;
+        self.active.store(false, Ordering::Relaxed);
         info!("Windows Module exited degraded mode");
     }
 
     pub fn is_active(&self) -> bool {
-        *self.active.read()
+        self.active.load(Ordering::Relaxed)
+    }
+}
+
+impl Default for WindowsDegradedMode {
+    fn default() -> Self {
+        Self::new()
     }
 }

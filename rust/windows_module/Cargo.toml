@@ -6,6 +6,9 @@ edition.workspace = true
 [dependencies]
 common = { path = "../common" }
 scc = { path = "../scc" }
+child_tunnel = { path = "../child_tunnel" }
+health_tunnel = { path = "../health_tunnel" }
+transport_tunnel = { path = "../transport_tunnel" }
 anyhow = "1.0"
 serde = { version = "1.0", features = ["derive"] }
 serde_json = "1.0"
@@ -21,7 +24,7 @@ nix = { version = "0.28", features = ["process", "signal"] }
 dynasm = "0.7"
 dynasmrt = "0.7"
 crossbeam = "0.8"
-ringbuf = "0.4"
+ringbuf = "0.4.8"
 evmap = "11.0"
 dashmap = "6.0"
 candle-core = { workspace = true }
@@ -29,7 +32,10 @@ candle-nn = { workspace = true }
 wgpu = "0.19"
 sysinfo = "0.29"
 rand = "0.8"
+rusqlite = { version = "0.32", features = ["bundled"] }
 libc = "0.2"
+zstd = "0.13"
+seccomp = { version = "0.1.1", optional = true }
 
 [target.'cfg(windows)'.dependencies]
 virt = "0.4"
@@ -38,4 +44,5 @@ virt = "0.4"
 tempfile = "3.8"
 
 [features]
-seccomp = []
+seccomp = ["dep:seccomp"]
+use_libvirt = []

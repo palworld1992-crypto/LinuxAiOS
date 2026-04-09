@@ -33,9 +33,12 @@ impl SingleEncapsulator {
         Ok(result)
     }
 
-    pub fn decapsulate(key: &[u8; 32], data: &[u8], aad: &[u8]) -> Option<Vec<u8>> {
+    pub fn decapsulate(key: &[u8; 32], data: &[u8], aad: &[u8]) -> anyhow::Result<Vec<u8>> {
         if data.len() < 12 {
-            return None;
+            return Err(anyhow!(
+                "Data too short for decapsulation: {} bytes",
+                data.len()
+            ));
         }
         let (nonce_bytes, ciphertext) = data.split_at(12);
         let nonce = GenericArray::from_slice(nonce_bytes);
@@ -49,6 +52,6 @@ impl SingleEncapsulator {
                     aad,
                 },
             )
-            .ok()
+            .map_err(|e| anyhow!("AES-GCM decryption failed: {}", e))
     }
 }

@@ -2,17 +2,19 @@
 name = "linux_module"
 version.workspace = true
 edition.workspace = true
-autotests = false
+autotests = true
 
 [dependencies]
 # Local modules - Hệ thống Tunnel và Core
 common = { path = "../common" }
 health_tunnel = { path = "../health_tunnel" }
+health_master_tunnel = { path = "../health_master_tunnel" }
 transport_tunnel = { path = "../transport_tunnel" }
 scc = { path = "../scc" }
+master_tunnel = { path = "../master_tunnel" }
+child_tunnel = { path = "../child_tunnel" }
 
 # Database & Storage
-# Sử dụng rusqlite từ workspace để đảm bảo tính nhất quán (thường đi kèm feature 'bundled')
 rusqlite = { workspace = true }
 lru = "0.12"
 zstd = "0.13"
@@ -20,6 +22,8 @@ tar = "0.4"
 walkdir = "2"
 dashmap = "6.0"
 shared_buffer = { path = "../shared_buffer" }
+tempfile = "3"
+
 # System & Low-level (Linux specific)
 nix = { version = "0.27", features = ["fs", "user", "process", "mman"] }
 libc = "0.2"
@@ -27,14 +31,18 @@ memmap2 = "0.9"
 memfd = "0.6"
 userfaultfd = "0.6"
 sysinfo = "0.29"
+libloading = "0.8"
+lazy_static = "1.5"
+
+# GPU Monitoring
+nvml-wrapper = "0.10"
 
 # Async & Concurrency
 tokio = { version = "1.0", features = ["full"] }
-parking_lot = "0.12"
 async-trait = "0.1"
 crossbeam = "0.8"
 crossbeam-utils = "0.8"
-ringbuf = "0.4"
+ringbuf = "0.4.8"
 tonic = "0.11"
 
 # Serialization & Security
@@ -50,7 +58,7 @@ tracing = "0.1"
 tracing-subscriber = "0.3"
 chrono = "0.4"
 
-# AI & Math - Thừa hưởng từ Workspace để tránh xung đột phiên bản rand/candle
+# AI & Math
 candle-core = { workspace = true }
 candle-nn = { workspace = true }
 candle-onnx = { workspace = true }
@@ -58,13 +66,11 @@ rand = { workspace = true }
 rand_distr = { workspace = true }
 half = { workspace = true }
 
-[dev-dependencies]
-tempfile = "3"
-criterion = { workspace = true }
-
 [features]
-default = ["ai"]
+default = ["ai", "nvml"]
 ai = []
+nvml = []
+wgpu = []
 
 [build-dependencies]
 bindgen = "0.69"
@@ -72,3 +78,15 @@ bindgen = "0.69"
 [[bin]]
 name = "linux_module_demo"
 path = "src/main.rs"
+[lints.rust]
+unused = "deny"
+unused_must_use = "deny"
+
+[lints.clippy]
+unwrap_used = "deny"
+expect_used = "deny"
+print_stdout = "deny"
+print_stderr = "deny"
+todo = "deny"
+or_fun_call = "deny"
+disallowed_types = "deny"

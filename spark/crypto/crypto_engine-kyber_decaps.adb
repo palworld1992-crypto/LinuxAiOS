@@ -1,4 +1,5 @@
-pragma Style_Checks (Off);
+--  SPARK_Mode (Off): Wrapper calls external liboqs library (OQS_KEM_decaps)
+--  which cannot be formally verified by SPARK.
 pragma SPARK_Mode (Off);
 
 with Interfaces.C; use Interfaces.C;

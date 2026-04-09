@@ -3,6 +3,7 @@
 
 use anyhow::Result;
 use common::health_tunnel::{HealthRecord, HealthStatus, HealthTunnel};
+use dashmap::DashMap;
 use std::sync::atomic::{AtomicBool, AtomicU64, Ordering};
 use std::sync::Arc;
 use tracing::{info, warn};
@@ -11,7 +12,7 @@ pub struct DegradedMode {
     active: AtomicBool,
     heartbeat_interval_secs: AtomicU64,
     last_heartbeat: AtomicU64,
-    health_tunnel: Option<Arc<dyn HealthTunnel + Send + Sync>>,
+    health_tunnel: DashMap<String, Arc<dyn HealthTunnel + Send + Sync>>,
 }
 
 impl DegradedMode {
@@ -20,12 +21,12 @@ impl DegradedMode {
             active: AtomicBool::new(false),
             heartbeat_interval_secs: AtomicU64::new(heartbeat_interval_secs),
             last_heartbeat: AtomicU64::new(0),
-            health_tunnel: None,
+            health_tunnel: DashMap::new(),
         }
     }
 
-    pub fn set_health_tunnel(&mut self, tunnel: Arc<dyn HealthTunnel + Send + Sync>) {
-        self.health_tunnel = Some(tunnel);
+    pub fn set_health_tunnel(&self, tunnel: Arc<dyn HealthTunnel + Send + Sync>) {
+        self.health_tunnel.insert("tunnel".to_string(), tunnel);
     }
 
     pub fn activate(&self) {
@@ -51,10 +52,13 @@ impl DegradedMode {
             return Ok(());
         }
 
-        let now = std::time::SystemTime::now()
-            .duration_since(std::time::UNIX_EPOCH)
-            .map(|d| d.as_secs())
-            .unwrap_or(0);
+        let now = match std::time::SystemTime::now().duration_since(std::time::UNIX_EPOCH) {
+            Ok(d) => d.as_secs(),
+            Err(_) => {
+                warn!("System clock before UNIX_EPOCH in send_heartbeat");
+                0
+            }
+        };
 
         let last = self.last_heartbeat.load(Ordering::Acquire);
         let interval = self.heartbeat_interval_secs.load(Ordering::Acquire);
@@ -65,7 +69,7 @@ impl DegradedMode {
 
         self.last_heartbeat.store(now, Ordering::Release);
 
-        if let Some(ref tunnel) = self.health_tunnel {
+        if let Some(tunnel) = self.health_tunnel.get("tunnel") {
             let record = HealthRecord {
                 module_id: "linux_main".to_string(),
                 timestamp: now,

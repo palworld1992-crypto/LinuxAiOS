@@ -5,7 +5,14 @@
 - **Ada**: Cấm dùng `pragma Warnings (Off)` hoặc `pragma Suppress`. Phải sửa lỗi được cảnh báo.
 - **C++**: Cấm dùng `#pragma warning(disable: ...)` hoặc `__pragma(warning(disable: ...))` trong file gốc. Nếu cần thiết do thư viện bên thứ ba, phải đặt trong `#ifdef` có comment giải thích và chỉ áp dụng cho header đó.
 - **Hậu quả**: Nếu CI phát hiện bất kỳ `allow`/`disable` nào (trừ các trường hợp ngoại lệ đã được phê duyệt và ghi rõ trong file), build sẽ FAIL. AI phải tự sửa warning bằng cách viết code đúng, không được dùng "băng keo".
-
+- **Test code cũng tuân thủ các quy tắc trên** (cấm `#[allow]`, cấm giá trị giả). Riêng `unwrap()` và `expect()` bị cấm hoàn toàn trong test, chỉ được dùng `expect()` có comment nếu thực sự không thể lỗi.
++ Nếu dùng giá trị giả như vec! hau none .... nhưng nó có logic hay implement thì phải comment chỗ đó.
+## 0a Mô tả về dùng vec!:
+1. Loại bỏ "Độ trễ không xác định" (Non-deterministic Latency)Cơ chế của Vec! là Dynamic Reallocation: khi bạn .push() vượt quá capacity, nó phải yêu cầu Hệ điều hành cấp một vùng nhớ mới, copy toàn bộ dữ liệu cũ sang và giải phóng vùng nhớ cũ.Cải thiện: Dùng Array [T; N] hoặc ArrayVec giúp triệt tiêu hoàn toàn quá trình này.Kết quả: Thời gian thực thi lệnh là hằng số ($O(1)$), không bao giờ bị "spike" (tăng vọt độ trễ) bất ngờ — điều bắt buộc đối với Transport Tunnel khi xử lý gói tin <1μs.
+2. Tránh "Page Fault" trong Kernel-spaceVec lưu dữ liệu trên Heap. Trong lập trình hệ thống, bộ nhớ Heap có thể bị đẩy xuống ổ cứng (Swap) nếu RAM đầy. Khi bạn truy cập vào một Vec đã bị swap, CPU sẽ bị khựng lại để chờ nạp dữ liệu từ disk (Page Fault).Cải thiện: Dùng Array hoặc SmallVec (với ngưỡng nhỏ) sẽ giữ dữ liệu trên Stack.Kết quả: Dữ liệu luôn nằm trong bộ nhớ vật lý gần CPU nhất (L1/L2 Cache), đảm bảo các module như Interrupt Handler hay eBPF Router luôn phản hồi tức thì.
+3. Tối ưu hóa "Zero-copy" và Cache LocalityQuy tắc AIOS yêu cầu dùng ringbuf (SPSC) và memfd thay vì các cấu trúc dữ liệu chuẩn.Cơ chế Vec!: Thường xuyên làm phân mảnh bộ nhớ (Fragmentation).Cải thiện: ringbuf sử dụng một vùng nhớ liên tục cố định.Kết quả: CPU không phải nhảy đi nhảy lại giữa các địa chỉ nhớ khác nhau (tăng Cache Hit rate). Điều này cực kỳ quan trọng khi bạn chạy các mô hình LNN/SNN đòi hỏi tốc độ xử lý telemetry theo thời gian thực.
+4. An toàn trong môi trường Đa luồng (Lock-free)Dùng Vec! trong môi trường đa luồng thường đòi hỏi Mutex hoặc RwLock. AIOS cấm tuyệt đối điều này vì nó gây ra hiện tượng "tranh chấp khóa" (Lock contention).Cải thiện: DashMap hoặc evmap chia nhỏ dữ liệu thành các phân vùng (shards) để nhiều CPU ghi vào cùng lúc mà không đợi nhau.Kết quả: Tăng khả năng mở rộng (Scalability) của SIH Supervisor khi phải xử lý hàng ngàn proposal đồng thời.
++ Nếu dùng giá trị giả nhưng nó có logic hay implement thì phải comment chỗ đó.
 ## 0b. Nghiêm cấm xóa code do thiếu phụ thuộc giữa các phase (BẮT BUỘC)
 
 **Vấn đề:** AI có thể xóa các lệnh gọi hàm, import, hoặc toàn bộ module vì cho rằng phase sau chưa triển khai, dẫn đến mất cấu trúc và không thể tích hợp sau này.
@@ -26,7 +33,143 @@
 let result = windows_supervisor::handle_api_call(api_req)
     .map_err(|e| anyhow!("Windows module not ready: {}", e))
     .unwrap_or_else(|_| unimplemented!("Phase 4 will integrate Windows Supervisor"));
+0c. Quy định sửa file khi bị lỗi thiếu phụ thuộc (BẮT BUỘC)
+Nguyên tắc chung:
+Khi AI gặp lỗi biên dịch hoặc phân tích tĩnh liên quan đến thiếu module, thiếu import, thiếu hàm, thiếu kiểu (ví dụ: cannot find module, unresolved import, undefined function, no matching declaration), tuyệt đối không được xóa các dòng code gọi hoặc import. Thay vào đó, AI phải tạo hoặc sửa file để bổ sung định nghĩa thiếu dưới dạng stub/placeholder.
 
+Các tình huống cụ thể và cách sửa
+1. Thiếu module/file hoàn toàn (chưa tồn tại)
+Hành động: Tạo file mới tại đường dẫn đúng theo cấu trúc thư mục của dự án.
+
+Nội dung file: Toàn bộ các định nghĩa công khai (pub, pub(crate), export) cần thiết để thoả mãn các lệnh gọi đang có, mỗi hàm hoặc phương thức đều được implement bằng placeholder.
+
+Placeholder theo ngôn ngữ:
+
+Rust: unimplemented!("Phase X sẽ implement hàm này")
+
+Zig: @panic("not implemented yet - Phase X")
+
+Ada: pragma Assert (False, "implement in Phase X"); hoặc raise Program_Error;
+
+C++: throw std::logic_error("implement in Phase X"); (nếu exception được phép, nếu không thì std::abort())
+
+Bắt buộc có comment: // TODO(Phase X): Liên kết với module Y khi Phase Z hoàn thành (hoặc tương tự).
+
+2. File đã tồn tại nhưng thiếu hàm / phương thức / trait implementation
+Hành động: Mở file hiện có, thêm định nghĩa thiếu (hàm, phương thức, impl block) ngay tại vị trí thích hợp (theo thứ tự alphabet hoặc theo module).
+
+Nội dung thêm: Giống placeholder ở trên.
+
+Không được xóa các hàm khác đã có.
+
+3. Thiếu khai báo kiểu (struct, enum, type alias) cần cho FFI hoặc serialization
+Hành động: Thêm định nghĩa kiểu với #[repr(C)] (Rust) hoặc struct rỗng (C++) hoặc type tương ứng.
+
+Nội dung: Các trường dữ liệu có thể để trống hoặc đặt là dummy: u8, nhưng phải comment rõ là placeholder.
+
+4. Thiếu import / use / with (module chưa được khai báo trong file hiện tại)
+Hành động: Không được xóa dòng import. Thay vào đó, giữ nguyên dòng import và tạo module rỗng (nếu module chưa tồn tại) hoặc thêm pub use để export.
+
+Trường hợp đặc biệt: Nếu module chỉ tồn tại trong tương lai (Phase sau), có thể dùng conditional compilation:
+
+Rust: #[cfg(feature = "unstable")] kèm comment giải thích.
+
+C++: #ifdef FUTURE_PHASE ... #endif.
+
+Luôn kèm comment giải thích lý do và Phase dự kiến hoàn thành.
+
+5. Thiếu phụ thuộc trong file cấu hình build (Cargo.toml, build.zig, CMakeLists.txt, …)
+Hành động: Thêm dependency vào file cấu hình, nhưng phải ghi rõ version "0.0.0" hoặc path = "../stubs/..." và comment # TODO(Phase X): thay bằng dependency thật.
+
+Không được xóa các dependency khác.
+
+Quy trình thực hiện khi AI phát hiện lỗi thiếu phụ thuộc
+Dừng việc sinh code mới.
+
+Xác định chính xác module/hàm/kiểu nào bị thiếu, và Phase nào sẽ implement nó (dựa trên tài liệu thietke.txt hoặc yêu cầu người dùng).
+
+Tạo hoặc sửa file theo đúng quy tắc trên.
+
+Thêm comment TODO rõ ràng, bao gồm Phase chịu trách nhiệm.
+
+Kiểm tra lại rằng code sau khi sửa vẫn compile (với các placeholder).
+
+Báo cáo người dùng danh sách các file đã tạo/sửa và lý do.
+0d. Nghiêm cấm tạo lệnh giả / mock trái phép để build thành công (BẮT BUỘC)
+Vấn đề: AI có thể viết các hàm trả về giá trị mặc định (Ok(()), None, 0, String::new(), …) hoặc dùng todo!() mà không có kế hoạch thực sự, chỉ để làm hài lòng trình biên dịch hoặc vượt qua CI. Hành vi này che giấu lỗi thiết kế, dẫn đến tích hợp thất bại sau này.
+
+Các hành vi bị cấm tuyệt đối
+Trả về giá trị giả mặc định khi chưa biết logic thật
+
+Cấm: fn compute() -> u32 { 0 } (trong khi lẽ ra phải tính toán thật)
+
+Cấm: fn handle() -> Result<(), Error> { Ok(()) } (bỏ qua xử lý lỗi)
+
+Cấm: fn get_data() -> Vec<u8> { vec![] } (che giấu việc thiếu dữ liệu)
+
+Cho phép duy nhất: Sử dụng unimplemented!(), panic!(), todo!() có kèm TODO comment giải thích lý do và Phase sẽ implement.
+
+Dùng todo!() hoặc unimplemented!() không có comment
+
+Bắt buộc: Mỗi unimplemented!() phải có comment // TODO(Phase X): <nội dung> ngay trên dòng đó hoặc trong cùng block.
+
+Ví dụ đúng:
+
+rust
+// TODO(Phase 4): Gọi Windows Supervisor qua Transport Tunnel
+unimplemented!("Phase 4 will integrate Windows Supervisor")
+Sử dụng conditional compilation (#[cfg(test)], #[cfg(debug_assertions)], …) để thay đổi logic trong production
+
+Cấm: Viết một phiên bản mock chỉ dùng trong test nhưng lại ảnh hưởng đến code production (ví dụ: #[cfg(not(test))] bỏ qua logic quan trọng).
+
+Ngoại lệ: Chỉ được dùng #[cfg(test)] cho test helpers hoặc mocks dùng riêng trong test, không được xuất hiện trong thư viện production trừ khi được người dùng cho phép rõ ràng.
+
+Trả về Ok(()) hay Ok(Default::default()) cho các hàm xử lý lỗi
+
+Cấm: Mọi hàm trả về Result không được trả về Ok(()) nếu chưa có logic thật.
+
+Thay vào đó: Dùng unimplemented!() hoặc Err(anyhow!("not implemented")) nếu muốn biểu diễn lỗi tạm thời (nhưng phải có TODO).
+
+Tạo std::sync::Mutex::new(()) giả hay dùng RwLock không cần thiết
+
+Cấm: Khởi tạo các đối tượng đồng bộ phức tạp mà không có lý do rõ ràng, chỉ để qua mặt borrow checker.
+
+Cho phép: Sử dụng () hoặc AtomicBool nếu thực sự là placeholder, nhưng phải ghi rõ TODO.
+
+Viết hàm extern "C" export mà thân hàm rỗng hoặc chỉ trả về 0
+
+Cấm: Xuất C API mà không có logic, vì các module khác gọi vào sẽ nhận hành vi không xác định.
+
+Bắt buộc: Thân hàm phải chứa abort() (C++) hoặc panic!("not implemented") (Rust) hoặc @panic("...") (Zig), kèm TODO.
+## 0e. Cấm tuyệt đối Mutex và RwLock trong production (BẮT BUỘC)
+
+**Nguyên tắc:** Hệ thống AIOS yêu cầu lock‑free ở mức tối đa để đảm bảo hiệu năng real‑time và tránh contention. Do đó:
+
+- **Cấm sử dụng `std::sync::Mutex`, `std::sync::RwLock`, `parking_lot::Mutex`, `parking_lot::RwLock`** trong bất kỳ code production nào (kể cả trong các module dùng `parking_lot` thay thế).
+- **Ngoại lệ:** Chỉ được phép dùng nếu có lý do bất khả kháng (ví dụ tương tác với thư viện C bắt buộc phải dùng lock), và phải được phê duyệt bởi maintainer, kèm comment giải thích rõ ràng trong code và trong tài liệu. Trong trường hợp đó, **bắt buộc** dùng `parking_lot::Mutex` (vì hiệu năng tốt hơn) và phải đặt trong module có feature flag `unsafe_allow_mutex`.
+
+**Các giải pháp thay thế bắt buộc:**
+
+| Mục đích | Giải pháp lock‑free được khuyến nghị |
+|----------|----------------------------------------|
+| Map chia sẻ (key‑value) | `DashMap` (từ crate `dashmap`) hoặc `evmap` (eventual consistency) |
+| Set chia sẻ | `DashSet` (từ `dashmap`) |
+| Hàng đợi SPSC | `ringbuf::HeapRb` hoặc `crossbeam::queue::ArrayQueue` |
+| Hàng đợi MPSC | `crossbeam::channel` (unbounded hoặc bounded) |
+| Hàng đợi MPMC | `crossbeam::queue::SegQueue` (unbounded) |
+| Biến trạng thái đơn (bool, số) | `AtomicBool`, `AtomicU32`, `AtomicPtr`, v.v. |
+| Bộ đệm vòng tròn | `ringbuf` (lock‑free SPSC) |
+| Bảng băm với sharding | `dashmap` (đã shard sẵn) |
+
+**Quy tắc kiểm tra tự động:**
+- Mọi crate `Cargo.toml` phải có lint `disallowed_types = "deny"` và file `clippy.toml` liệt kê:
+  ```toml
+  disallowed-types = [
+      "std::sync::Mutex",
+      "std::sync::RwLock",
+      "parking_lot::Mutex",
+      "parking_lot::RwLock"
+  ]
 
 # PHẦN HƯỚNG DẪN SINH CODE CHO AI – CHUẨN DOANH NGHIỆP
 
@@ -63,7 +206,12 @@ Lưu ý: Không giải thích dài dòng, không chào hỏi. Chỉ tập trung 
 · Shared memory: dùng memmap2, ring buffer với atomic.
 · FFI: dùng extern "C", #[repr(C)], panic bọc catch_unwind.
 · Release profile: lto = "fat", codegen-units = 1, panic = "abort", strip = true.
-
+· **Test code (bắt buộc):** 
+   - Cấm sử dụng `unwrap()` hoặc `expect()` trong test (unit test, integration test, doctest). 
+   - Mỗi test function phải trả về `Result<(), Box<dyn std::error::Error>>` (hoặc `anyhow::Result<()>`) và dùng toán tử `?` để xử lý lỗi.
+   - Chỉ được dùng `expect()` khi **thực sự không thể lỗi** (ví dụ khởi tạo hằng số) và phải kèm comment giải thích lý do.
+   - Sử dụng `assert!()`, `assert_eq!()`, `assert_matches!()` để kiểm tra giá trị.
+   - Với async test: `#[tokio::test] async fn test_name() -> anyhow::Result<()> { ... }`.
 2.2. Zig (0.16+)
 
 · Bắt buộc kiểm tra phiên bản: Mọi code Zig phải tuân thủ cú pháp Zig 0.16.0 trở lên.
@@ -141,11 +289,26 @@ Lưu ý: Không giải thích dài dòng, không chào hỏi. Chỉ tập trung 
 5. Kiểm thử và chất lượng
 
 · Unit test kèm trong file hoặc tách riêng, đảm bảo coverage ≥ 80% (Rust: cargo-tarpaulin).
+· **Quy chuẩn viết test (bắt buộc):**
+   - Tất cả test function phải trả về `Result<(), anyhow::Error>` (hoặc `Result<(), Box<dyn Error>>`).
+   - **Cấm tuyệt đối `unwrap()`, `expect()`** (trừ ngoại lệ có comment).
+   - Dùng `?` để truyền lỗi lên trên.
+   - Dùng `anyhow::bail!()` hoặc `anyhow::anyhow!()` để tạo lỗi tùy chỉnh.
+   - Các test async dùng `#[tokio::test] async fn test() -> anyhow::Result<()>`.
+   - Không dùng `#[should_panic]` cho các lỗi có thể xử lý; thay vào đó kiểm tra `Result::Err`.
+· Mọi `unsafe` phải có fuzz target (cargo-fuzz) và chạy miri trong CI.
 · Mọi unsafe phải có fuzz target (cargo-fuzz) và chạy miri trong CI.
 · Ada: formal verification với SPARK Prover, không lỗi.
 · Benchmark: dùng criterion cho Rust, đo throughput và latency. Kết quả phải so sánh với baseline.
 · CI pipeline: lint, build, test, fuzz, coverage, benchmark (nếu có thay đổi hiệu năng).
+### 5.1. Quy tắc viết test (bắt buộc)
 
+- **Không dùng `unwrap()`**, `expect()`, `panic!()` trong test code trừ ngoại lệ đã nêu.
+- **Mỗi test function nên trả về `Result<(), Box<dyn Error>>`** để dùng toán tử `?`.
+- **Dùng `assert!(expr)` hoặc `assert_eq!(left, right)`** để kiểm tra điều kiện.
+- **Với async test**, dùng `#[tokio::test] async fn test_name() -> Result<(), Box<dyn Error>> { ... }`.
+- **Với test cần mock**, sử dụng crate `mockall` hoặc feature flag `mock` (xem Phase 13), không dùng `unwrap()` trong mock implementation.
+- **Hậu quả vi phạm**: CI sẽ fail nếu phát hiện `unwrap()` hoặc `expect()` trong bất kỳ test file nào (kiểm tra bằng `grep -r "\.unwrap()" tests/` hoặc clippy lint `clippy::unwrap_used` được bật cho test).
 ---
 
 6. Tối ưu hiệu năng
@@ -555,7 +718,9 @@ SCC là thư viện dùng chung cho mọi module, đảm bảo giao tiếp an to
 - Các tunnel không chứa logic vận hành hệ thống; mọi quyết định runtime do supervisor thực hiện.
 - Khi viết code giao tiếp qua Transport Tunnel: payload plaintext, token trong header, không mã hóa thêm.
 - **SQLite chỉ được dùng cho các mục đích tra cứu lịch sử đầy đủ, không dùng trong luồng xử lý chính. Thay vào đó, ưu tiên ring buffer, DashMap, evmap để đạt throughput cao.**
-- Sử dụng các crate đã phê duyệt: `memmap2`, `crossbeam`, `parking_lot`, `rayon`, `aes`, `ctr`, `zstd`, `rusqlite` (chỉ cho lưu trữ lịch sử), `tonic`, `serde_json`, `thiserror`, `rand`, `libc`, `nix`, `cbindgen`, `pyo3`, `bindgen`, `evmap`, `ringbuf`, `dashmap`, `crossbeam_utils`.
+  - Sử dụng các crate đã phê duyệt: `memmap2`, `crossbeam`, `parking_lot`, `rayon`, `aes`, `ctr`, `zstd`, `rusqlite` (chỉ cho lưu trữ lịch sử), `tonic`, `serde_json`, `thiserror`, `rand`, `libc`, `nix`, `cbindgen`, `pyo3`, `bindgen`, `evmap`, `ringbuf`, `dashmap`, `crossbeam_utils`.
++ - **Cấm dùng `println!` và `eprintln!` trong production; trong test chỉ được dùng `eprintln!` khi thực sự cần và phải có comment.** Thay thế bằng `tracing::info!`, `tracing::debug!`, v.v.
++ - **Cấm dùng `unwrap_or()`, `unwrap_or_else()`, `unwrap_or_default()` trong production.** Nếu cần giá trị mặc định, xử lý bằng `match` và ghi log cảnh báo.
 
 ## 2.4. Yêu cầu cụ thể (File & Thư mục)
 
@@ -948,7 +1113,8 @@ Linux Module là trung tâm điều phối toàn hệ thống, gồm **Linux Sup
 - SnapshotManager ký Dilithium; mọi snapshot đều ghi metadata vào Health Tunnel qua ring buffer.
 - Mỗi thành phần quan trọng implement `HealthCheck` trait (Rust) hoặc tương đương.
 - Các tunnel không chứa logic vận hành hệ thống; mọi quyết định runtime do supervisor thực hiện.
-- **SQLite chỉ dùng để lưu trữ lịch sử đầy đủ (full history), không dùng trong luồng chính. Thay vào đó dùng DashSet, ringbuf, evmap, atomic cho metadata và dữ liệu runtime.**
+  - **SQLite chỉ được dùng để lưu trữ lịch sử đầy đủ (full history), không dùng trong luồng chính. Thay vào đó dùng DashSet, ringbuf, evmap, atomic cho metadata và dữ liệu runtime.**
++ - **Cấm `Mutex<HashMap>` và `RwLock<HashMap>` trong production.** Sử dụng `DashMap`, `evmap` hoặc `ringbuf` thay thế.
 - Sử dụng các crate đã phê duyệt: `sysinfo`, `nix`, `libc`, `memmap2`, `crossbeam`, `parking_lot`, `tokio`, `tonic`, `rusqlite` (chỉ history), `ort`/`candle`, `zstd`, `bytemuck`, `rand`, `thiserror`, `anyhow`, `evmap`, `ringbuf`, `dashmap`, `crossbeam_utils`.
 
 ### 3.4. Yêu cầu cụ thể (File & Thư mục)
@@ -2275,6 +2441,144 @@ System Intelligence Hub (SIH) là trung tâm tri thức của AIOS, cung cấp k
   *Chức năng:* Định nghĩa `SupportContext` với các flags: Embedding, DecisionHistory, HardwareCollection.  
   *Dependencies:* supervisor_support  
   *Unsafe:* Không
+####6.4.10. Web‑based Knowledge Scraper (Rust + Browser FFI) – Headless, không API
+Mục tiêu: Cho phép SIH thu thập tri thức kỹ thuật từ các nền tảng AI (DeepSeek, ChatGPT, Gemini) bằng cách điều khiển Browser Module (Chromium headless) – không gọi bất kỳ REST API chính thức nào. Hỗ trợ đăng nhập bằng email/mật khẩu (kể cả xác thực 2FA), lưu session cookie, và trích xuất câu trả lời từ giao diện web.
+
+rust/sih/src/web_scraper/mod.rs
+Chức năng: Điểm vào chính của scraper. Khởi tạo BrowserController, AccountManager, SessionCache, TwoFAHandler, QueryGenerator, ResponseParser, Scheduler. Cung cấp API start_collection(targets: Vec<Platform>) và stop_collection().
+Cách thức: Sử dụng tokio để quản lý các tác vụ thu thập. Mỗi platform có một worker riêng.
+Dependencies: tất cả các submodule, tokio, anyhow
+Unsafe: Không
+
+rust/sih/src/web_scraper/browser_controller.rs
+Chức năng: FFI wrapper an toàn gọi các hàm C++ từ Browser Module (Phase 9). Cung cấp các hàm: init_headless(), login_with_password(platform, email, password) -> Result<bool>, submit_question(question) -> String, get_cookies() -> Vec<u8>, set_cookies(data), clear_cookies(), submit_otp(code), shutdown().
+Cách thức: Dùng extern "C", bọc catch_unwind ở phía Rust. Sử dụng parking_lot::Mutex để đảm bảo an toàn khi gọi từ nhiều thread. Session cookie được mã hóa bằng khóa Dilithium của SIH trước khi lưu vào SessionCache.
+Dependencies: browser_ffi (C++ static lib), libc, parking_lot
+Unsafe: Có – gọi C++ qua FFI, fuzz target bắt buộc.
+
+rust/sih/src/web_scraper/account_manager.rs
+Chức năng: Quản lý tài khoản (email, mật khẩu) của người dùng cho từng platform. Lưu trữ an toàn thông qua Child Tunnel (mã hóa Dilithium).
+Cách thức: Khi người dùng nhập thông tin qua Adaptive Interface, dữ liệu được mã hóa bằng spark::crypto và gửi lên Child Tunnel dưới dạng blob. Khi cần đăng nhập, giải mã tạm thời trong RAM, dùng xong xóa bằng zeroize. Hỗ trợ nhiều tài khoản cho một platform (xoay vòng).
+Dependencies: child_tunnel, spark::crypto, zeroize, dashmap
+Unsafe: Có – FFI Ada (giải mã), wrapper an toàn.
+
+rust/sih/src/web_scraper/session_cache.rs
+Chức năng: Lưu trữ cookie và session data của browser sau khi đăng nhập để tái sử dụng cho nhiều câu hỏi trong cùng phiên.
+Cách thức: Dùng DashMap<Platform, EncryptedCookie> để truy cập nhanh. Cookie được mã hóa bằng khóa của SIH. Có cơ chế tự động xóa session sau 1 giờ không hoạt động.
+Dependencies: dashmap, spark::crypto
+Unsafe: Có – FFI Ada (mã hóa/giải mã)
+
+rust/sih/src/web_scraper/twofa_handler.rs
+Chức năng: Xử lý khi browser yêu cầu nhập mã OTP (2FA) trong quá trình đăng nhập.
+Cách thức: Khi login_with_password trả về mã lỗi NeedTwoFactor, SIH gửi sự kiện đến Adaptive Interface qua WebSocket. Frontend hiển thị popup yêu cầu nhập mã. Người dùng nhập mã, gửi về SIH, sau đó gọi browser_controller.submit_otp(code) để hoàn tất. Mã OTP không được lưu trữ.
+Dependencies: transport_tunnel (để gửi thông báo), serde_json
+Unsafe: Không
+
+rust/sih/src/web_scraper/query_generator.rs
+Chức năng: Sinh câu hỏi thông minh dựa trên khoảng trống tri thức (knowledge gaps) từ DKSS. Sử dụng SLM (Phi‑3/TinyLlama) chạy trên Tensor Pool.
+Cách thức: Nhận danh sách chủ đề cần khám phá, tạo prompt template, gọi SLM inference để sinh câu hỏi bằng tiếng Anh. Dùng bloom filter (Zig) để tránh hỏi lại câu đã có trong knowledge base.
+Dependencies: candle, tensor_pool, zig::bloom, serde_json
+Unsafe: Không
+
+rust/sih/src/web_scraper/response_parser.rs
+Chức năng: Trích xuất nội dung câu trả lời từ HTML/text trả về bởi browser. Loại bỏ quảng cáo, mã không liên quan.
+Cách thức: Dùng regex để tìm các khu vực chứa câu trả lời dựa trên cấu trúc DOM đặc trưng của từng platform. Nếu không parse được, fallback dùng SLM để tóm tắt và trích xuất. Kết quả trả về dạng ExtractedData { text, code_snippets, config_blocks, trust_hint }.
+Dependencies: regex, candle, serde_json
+Unsafe: Không
+
+rust/sih/src/web_scraper/quality_assessor.rs
+Chức năng: Đánh giá nhanh chất lượng câu trả lời (0..1) trước khi gửi vào DKSS.
+Cách thức: Công thức: 0.4 * (len_clamped/2000) + 0.3 * (num_code_blocks/5) + 0.3 * slm_score. SLM được gọi để đánh giá mức độ hữu ích. Ngưỡng chấp nhận mặc định là 0.7 (có thể cấu hình qua policy).
+Dependencies: candle, tensor_pool
+Unsafe: Không
+
+rust/sih/src/web_scraper/privacy_filter.rs
+Chức năng: Xóa thông tin nhạy cảm (email, password, token, IP) khỏi log và bộ nhớ trước khi lưu trữ.
+Cách thức: Dùng regex để thay thế các pattern nhạy cảm bằng [REDACTED]. Áp dụng cho tất cả log ghi qua tracing. Sau mỗi phiên, gọi browser_controller.clear_cookies() và xóa session khỏi cache.
+Dependencies: regex, tracing
+Unsafe: Không
+
+rust/sih/src/web_scraper/scheduler.rs
+Chức năng: Lên lịch thu thập dữ liệu, chỉ chạy khi điện thế màng (potential) > 0.6 và hệ thống không quá tải.
+Cách thức: Dùng tokio::time::interval, đọc potential từ Health Tunnel (DashMap). Nếu đủ điều kiện, gọi QueryOrchestrator (xem 6.4.9) để thực hiện một lô câu hỏi. Giữa các câu hỏi có random delay 5‑15s. Giữa các phiên thu thập cho cùng platform, chờ ít nhất 1 giờ.
+Dependencies: health_tunnel, tokio, rand
+Unsafe: Không
+####6.4.11. Priority‑Driven Web Scraper với Fallback và Tích Hợp DKSS
+Mục tiêu: Xây dựng cơ chế ưu tiên động cho việc hỏi đáp từ nhiều platform (DeepSeek, ChatGPT, Gemini). Mỗi câu hỏi được gửi tuần tự đến các platform theo thứ tự ưu tiên cho đến khi nhận được câu trả lời đạt chất lượng. Tự động học từ lịch sử để điều chỉnh thứ tự ưu tiên.
+
+rust/sih/src/web_scraper/priority_config.rs
+Chức năng: Định nghĩa cấu hình tĩnh và tham số động cho mỗi platform (base_priority, weight_trust, weight_latency, weight_success_rate, rate_limit_per_hour, cooldown_secs).
+Cách thức: Cấu hình được đọc từ Master Tunnel (policy JSON) và cache trong DashMap. Người dùng có thể điều chỉnh base_priority qua Adaptive Interface.
+Dependencies: master_tunnel::client, serde_json, dashmap
+Unsafe: Không
+
+rust/sih/src/web_scraper/platform_stats.rs
+Chức năng: Theo dõi các chỉ số hiệu năng cho từng platform: trust_score (từ DKSS), success_count, failure_count, total_latency_ms, last_used, cooldown_until, captcha_count.
+Cách thức: Dùng DashMap<Platform, PlatformStats> để truy cập nhanh. Cung cấp API record_success, record_failure, record_captcha, is_in_cooldown. Định kỳ (mỗi 1 giờ) ghi snapshot vào SQLite (lịch sử).
+Dependencies: dashmap, rusqlite (history only)
+Unsafe: Không
+
+rust/sih/src/web_scraper/priority_engine.rs
+Chức năng: Tính toán thứ tự ưu tiên hiện tại dựa trên công thức:
+effective_score = (1/base_priority) * (1 + trust_norm*weight_trust) * (1/(1+latency_norm*weight_latency)) * (1+success_norm*weight_success_rate)
+Sau đó sắp xếp các platform theo effective_score giảm dần.
+Cách thức: Đọc PlatformStats và PriorityConfig, chuẩn hóa các giá trị về [0,1], tính toán. Nếu một platform đang trong cooldown, tạm thời loại khỏi danh sách.
+Dependencies: priority_config, platform_stats
+Unsafe: Không
+
+rust/sih/src/web_scraper/query_orchestrator.rs
+Chức năng: Điều phối việc gửi một câu hỏi đến nhiều platform theo thứ tự ưu tiên, dừng lại khi nhận được câu trả lời đạt ngưỡng chất lượng.
+Cách thức:
+
+Nhận câu hỏi từ QueryGenerator.
+Lấy danh sách platform đã sắp xếp từ PriorityEngine.
+Với mỗi platform: kiểm tra cooldown, rate limit; gọi BrowserController.ask(); đo latency; gọi ResponseParser và QualityAssessor.
+Nếu quality >= QUALITY_THRESHOLD (mặc định 0.7), cập nhật PlatformStats (thành công) và trả về kết quả.
+Nếu không, cập nhật thất bại (hoặc CAPTCHA) và chuyển sang platform tiếp theo.
+Nếu không platform nào thành công, trả về lỗi NoGoodAnswer.
+Dependencies: priority_engine, platform_stats, browser_controller, response_parser, quality_assessor
+Unsafe: Không (gọi FFI nhưng bọc an toàn)
+rust/sih/src/web_scraper/captcha_handler.rs
+Chức năng: Xử lý khi browser gặp CAPTCHA.
+Cách thức: Khi BrowserController báo lỗi CAPTCHA, gửi thông báo đến Adaptive Interface kèm ảnh CAPTCHA (nếu lấy được). Người dùng giải CAPTCHA và gửi lại. Nếu CAPTCHA xuất hiện >3 lần trong 1 giờ, platform được đặt vào cooldown dài (1 giờ) và giảm base_priority tạm thời.
+Dependencies: transport_tunnel, adaptive_interface::notify
+Unsafe: Không
+
+rust/sih/src/dkss/knowledge_ingestion.rs (bổ sung)
+Chức năng: Mở rộng pipeline DKSS để nhận dữ liệu từ QueryOrchestrator.
+Cách thức: Khi có câu trả lời hợp lệ, tạo KnowledgeEntry với metadata: source platform, trust_score_initial = platform_stats.trust_score * quality, latency_ms, question_hash. Đưa qua content validator (trùng lặp, an toàn), privacy filter, sau đó lưu vào knowledge base (SQLite + vector index). Cập nhật trust_score của platform dựa trên kết quả validation (nếu entry bị gỡ bỏ do sai, trust_score giảm).
+Dependencies: base, vector_store, trust_scoring
+Unsafe: Không
+
+rust/adaptive_backend/src/api/web_scraper.rs (bổ sung)
+Chức năng: Các REST endpoint để quản lý scraper:
+
+GET /api/web_scraper/priorities – xem thứ tự ưu tiên hiện tại.
+
+POST /api/web_scraper/priorities – điều chỉnh base_priority.
+
+POST /api/web_scraper/accounts – thêm/sửa tài khoản (email, password).
+
+GET /api/web_scraper/stats – xem success rate, latency, trust score.
+
+POST /api/web_scraper/2fa/{platform} – gửi mã OTP.
+
+POST /api/web_scraper/captcha/{platform} – gửi giải pháp CAPTCHA.
+Cách thức: Xác thực token từ Master Tunnel, gọi các hàm tương ứng trong SIH qua gRPC nội bộ.
+Dependencies: axum, serde_json, master_tunnel
+Unsafe: Không
+####2.4.12. Scraper history table (SQLite)
+rust/database_tunnel/src/history/scraper_log.rs (mới)
+Chức năng: Ghi log mỗi lần hỏi – đáp: platform, câu hỏi (hash), quality score, latency, trust_score sau khi lưu.
+Cách thức: Dùng SQLite với HMAC để chống giả mạo. Định kỳ tính Merkle root và ghi vào blockchain (Database Tunnel).
+Dependencies: rusqlite, hmac, sha2
+Unsafe: Không
+### 2.4.13. Scraper health reporter
+rust/sih/src/web_scraper/health.rs (mới)
+Chức năng: Định kỳ gửi health status của scraper (số câu hỏi thành công/thất bại, cooldown platforms, potential ảnh hưởng) vào Health Tunnel qua ring buffer.
+Cách thức: Đọc stats từ PlatformStats, đóng gói thành message, đẩy vào ringbuf.
+Dependencies: health_tunnel, ringbuf
+Unsafe: Không
 
 ### 6.5. Cơ chế đồng bộ và điều khiển thần kinh (bổ sung cho Phase 6)
 
@@ -2356,15 +2660,27 @@ System Intelligence Hub (SIH) là trung tâm tri thức của AIOS, cung cấp k
 10. **Tự điều chỉnh trọng số kết nối (synaptic plasticity):**  
     - Định kỳ 5 phút, SIH đọc batch tín hiệu từ Database Tunnel, tính hiệu quả tương tác giữa các module.  
     - Gọi RL policy để đề xuất điều chỉnh trọng số, ghi đề xuất vào Database Tunnel và gửi qua Master Tunnel nếu cần đồng thuận.  
-
+11. Thu thập tri thức ưu tiên:
+SIH Supervisor định kỳ (hoặc khi phát hiện knowledge gap) gọi QueryOrchestrator với một câu hỏi.
+PriorityEngine tính toán thứ tự platform dựa trên trust_score, latency, success rate.
+Lần lượt hỏi từng platform qua Browser headless, đánh giá chất lượng, dừng khi đạt ngưỡng.
+Câu trả lời tốt nhất được đưa vào DKSS, lưu vào knowledge base, đồng thời cập nhật platform stats.
+Nếu tất cả platform thất bại, ghi nhận knowledge gap và thử lại sau (có exponential backoff).
+12.Tự động điều chỉnh ưu tiên:
+Mỗi giờ, SIH tổng kết stats, gửi đề xuất điều chỉnh base_priority (dựa trên tỷ lệ thành công và độ trễ) đến Master Tunnel.
+Người dùng có thể ghi đè qua Adaptive Interface.
+Mọi thay đổi được ghi vào Database Tunnel để kiểm toán.
 ### 6.8. Kiểm thử & Tiêu chí chấp nhận
-
 - **Unit tests:** Kiểm tra từng module (Rust: cargo test). Coverage ≥80%.  
+Mock BrowserController, kiểm tra PriorityEngine tính toán đúng thứ tự, QueryOrchestrator fallback đúng platform.
 - **Integration tests:** Kiểm tra API gateway, DKSS pipeline, Database Tunnel ghi/đọc, PyO3 binding.  
+ Dùng headless Chromium thật với trang web giả lập (có form đăng nhập, chat). Kiểm tra toàn bộ luồng hỏi‑đáp, xử lý CAPTCHA giả.
 - **Fuzzing:** Content validator (cấu hình độc hại), trust scoring model, knowledge base query, ring buffer, DashMap.  
 - **Benchmark:** Vector search latency <10ms; hardware collector throughput >1k events/s.  
 - **Chaos tests:** Kill SIH Supervisor → failover <2s; database corruption → tự động rollback từ snapshot.  
+Mô phỏng platform A luôn trả lời kém chất lượng → fallback sang B. Mô phỏng CAPTCHA → thông báo đến người dùng và cooldown.
 - **Fallback test:** Trên máy không có GPU, embedding engine chạy trên CPU (SIMD) với hiệu năng chấp nhận được.
+Thời gian trung bình để có câu trả lời hợp lệ từ 3 platform < 30s (tùy mạng).
 
 ### 6.9. Ghi chú bổ sung
 
@@ -2375,7 +2691,11 @@ System Intelligence Hub (SIH) là trung tâm tri thức của AIOS, cung cấp k
 - Active knowledge discovery sử dụng các sự kiện từ Health Tunnel để xác định khoảng trống tri thức.  
 - Trust scoring model được huấn luyện bởi Python worker, ký Dilithium trước khi triển khai.  
 - **SQLite chỉ dùng cho lịch sử (full knowledge entries, decision history logs). Luồng chính dùng DashMap, ringbuf, evmap để đảm bảo hiệu năng cao.**
-
+- Tuyệt đối không dùng API: Không gọi https://api.openai.com, https://generativelanguage.googleapis.com, hay bất kỳ endpoint REST chính thức nào.
+- Bảo mật tài khoản: Mật khẩu chỉ được giải mã trong RAM, dùng xong xóa bằng zeroize. Cookie được mã hóa trước khi lưu xuống đĩa hoặc cache.
+- Session reuse: Cookie được tái sử dụng tối đa 1 giờ để tránh đăng nhập lại nhiều lần.
+- Tuân thủ điều khoản: Người dùng phải đồng ý với điều khoản của từng nền tảng khi cung cấp tài khoản. Hệ thống không tự động tạo tài khoản mới.
+- Logging: Mọi sự kiện (hỏi, thành công, thất bại, CAPTCHA) được ghi vào ring buffer, sau đó ghi vào SQLite (ẩn danh, không lưu nội dung câu hỏi/trả lời). Nội dung câu trả lời chỉ lưu trong knowledge base đã qua privacy filter.
 ---
 ## PHASE 7: XÂY DỰNG SYSTEM HOST – ĐÃ SỬA (HẠN CHẾ SQLITE, TÍCH HỢP NEURON)
 
@@ -2557,6 +2877,18 @@ System Host là module quản lý bootstrap, giám sát toàn hệ thống, fail
   *Chức năng:* Định nghĩa `SupportContext` với các flags: HealthChecker, MicroScheduler, Watchdog.  
   *Dependencies:* supervisor_support  
   *Unsafe:* Không
+####7.4.10. Mở rộng worker manager cho scraper models
+rust/system_host/src/supervisor/host_worker_manager.rs (bổ sung)
+Chức năng: Thêm method start_scraper_worker(worker_type: ScraperWorkerType, params: serde_json::Value) -> Result<WorkerHandle>.
+Cách thức: Dùng std::process::Command spawn Python process với môi trường ảo riêng. Truyền tham số qua stdin hoặc file tạm. Giám sát tiến trình, kill nếu chạy quá lâu.
+Dependencies: tokio::process, serde_json
+Unsafe: Không
+
+rust/system_host/src/ai/model_manager.rs (bổ sung)
+Chức năng: Cho phép triển khai model mới cho SIH scraper (query generator, quality assessor). Xác minh chữ ký, lưu vào thư mục models, thông báo cho SIH qua gRPC.
+Cách thức: Tương tự model supervisor nhưng gọi SIH thay vì Linux Module.
+Unsafe: Có – FFI Ada xác minh chữ ký
+
 
 ### 7.5. Cơ chế đồng bộ và điều khiển thần kinh (bổ sung cho Phase 7)
 
@@ -2836,6 +3168,27 @@ Adaptive Interface Module cung cấp giao diện người dùng để quản lý
 - **adaptive_frontend/src/components/LogViewer.tsx** – hiển thị audit logs, filter theo module, mức độ.  
 - **adaptive_frontend/src/hooks/useWebSocket.ts** – hook quản lý kết nối WebSocket, tự động reconnect.  
 - **adaptive_frontend/src/api/client.ts** – HTTP client (axios) gọi backend.
+#### 8.4.7. Frontend components cho web scraper
+adaptive_frontend/src/components/ScraperAccountManager.tsx
+Chức năng: Form thêm/sửa/xóa tài khoản cho từng platform (DeepSeek, ChatGPT, Gemini). Nhập email, mật khẩu (có checkbox hiển thị). Gửi đến backend API.
+Cách thức: Dùng React Hook Form, gọi POST /api/web_scraper/accounts. Hiển thị trạng thái "đã kết nối", "lỗi", "chờ OTP".
+Unsafe: Không
+
+adaptive_frontend/src/components/ScraperPriorityPanel.tsx
+Chức năng: Hiển thị thứ tự ưu tiên hiện tại (dạng danh sách kéo thả). Cho phép người dùng điều chỉnh base_priority.
+Cách thức: Dùng react-beautiful-dnd, gọi GET và POST /api/web_scraper/priorities. Hiển thị trust score, success rate, latency của mỗi platform.
+Unsafe: Không
+
+adaptive_frontend/src/components/ScraperTwoFADialog.tsx
+Chức năng: Popup hiển thị khi cần nhập mã OTP hoặc giải CAPTCHA.
+Cách thức: Lắng nghe WebSocket event scraper:2fa_required hoặc scraper:captcha_required. Hiển thị input và nút gửi. Gửi mã về POST /api/web_scraper/2fa/{platform}.
+Unsafe: Không
+
+adaptive_frontend/src/components/ScraperStatsChart.tsx
+Chức năng: Biểu đồ hiển thị success rate, latency, số câu hỏi đã hỏi theo thời gian.
+Cách thức: Dùng recharts, gọi GET /api/web_scraper/stats định kỳ.
+Unsafe: Không
+
 
 ### 8.5. Cơ chế đồng bộ và điều khiển thần kinh (bổ sung cho Phase 8)
 
@@ -3065,7 +3418,24 @@ Browser Module cung cấp trình duyệt web dựa trên Chromium, được tố
 - **rust/browser_ffi/src/supervisor/browser_support.rs** (nếu cần)  
   *Chức năng:* Không có `SupervisorSupport` trực tiếp cho main (vì main là C++). Thay vào đó, khi supervisor bận, nó có thể tạm thời không gửi lệnh mới, và System Host có thể can thiệp qua emergency channel.  
   *Unsafe:* Không
-
+####9.4.5. Mở rộng FFI cho headless scraping
+browser_module/src/ffi/browser_ffi.h (bổ sung)
+Chức năng: Thêm các hàm C export:
+browser_headless_init() – khởi tạo Chromium ở chế độ không giao diện, không hiển thị cửa sổ.
+browser_login_with_password(url, email, password) -> int – tự động điền form đăng nhập, xử lý redirect, trả về 0 thành công, 1 sai mật khẩu, 2 cần OTP, 3 CAPTCHA.
+browser_submit_question(question) -> char* – gõ câu hỏi vào ô chat, nhấn gửi, chờ phản hồi, trả về HTML kết quả.
+browser_get_cookies(url) -> uint8_t* – lấy tất cả cookie của domain dưới dạng blob.
+browser_set_cookies(url, data, len) -> int – khôi phục cookie.
+browser_clear_cookies() – xóa toàn bộ cookie và localStorage.
+browser_submit_otp(code) -> int – nhập mã OTP khi được yêu cầu.
+browser_shutdown() – đóng browser.
+Cách thức: Sử dụng Chromium Embedding Framework (CEF) hoặc DevTools Protocol để điều khiển.
+Unsafe: Có (gọi Chromium C++ API)
+browser_module/src/headless/manager.cpp
+Chức năng: Quản lý một instance Chromium headless duy nhất (có thể dùng cho nhiều phiên thu thập liên tiếp).
+Cách thức: Khởi tạo CEF với --headless=new --disable-gpu --no-sandbox. Duy trì profile riêng cho mỗi platform để lưu cookie.
+Dependencies: Chromium, CEF
+Unsafe: Có
 ### 9.5. Cơ chế đồng bộ và điều khiển thần kinh (bổ sung cho Phase 9)
 
 *Áp dụng các cơ chế đã định nghĩa trong Phase 2/3 và bổ sung thêm:*
@@ -3280,6 +3650,61 @@ Hệ thống AIOS sử dụng machine learning để dự đoán tải, đề xu
   *Chức năng:* Export struct/func sang Python.  
   *Dependencies:* pyo3  
   *Unsafe:* Không
+###10.4.6. Python Workers chuyên trách xử lý dữ liệu từ Web Scraper
+Mục tiêu: Sử dụng Python (chạy on‑demand) để huấn luyện và cải thiện các thành phần AI liên quan đến web scraper:
+
+Fine‑tune SLM (Phi‑3/TinyLlama) dùng cho QueryGenerator và QualityAssessor.
+
+Huấn luyện mô hình phân loại để phát hiện câu trả lời chất lượng cao.
+
+Cải thiện ResponseParser bằng cách học cấu trúc DOM đặc trưng của từng platform.
+
+Tạo bộ embedding cho các câu hỏi đã thu thập để phục vụ tìm kiếm knowledge gap.
+
+Các worker này chạy on‑demand, không nằm trong core system, kết quả xuất ra được đóng gói thành model mới (ONNX/GGUF) và triển khai qua Model Manager (System Host) sau khi được ký Dilithium.
+
+10.4.6.1. Worker fine‑tune query generator
+python_workers/scrapers/finetune_query_generator.py
+Chức năng: Fine‑tune SLM (Phi‑3/TinyLlama) trên tập dữ liệu câu hỏi – câu trả lời đã thu thập từ web scraper (lưu trong knowledge base). Mục tiêu: sinh câu hỏi đa dạng, chính xác hơn, bám sát knowledge gap.
+Cách thức: Đọc dữ liệu từ knowledge base qua PyO3 (aios_data), chuẩn bị prompt template, fine‑tune bằng LoRA (thư viện peft, transformers). Xuất model dưới dạng ONNX, sau đó dùng convert_to_int4.py (Phase 10) chuyển sang GGUF/INT4. Ký model bằng khóa Dilithium của SIH rồi gửi proposal lên System Host.
+Dependencies: torch, transformers, peft, onnx, pyo3 (aios_data), spark::crypto (qua FFI gọi từ Python? Thực tế Python không gọi trực tiếp, mà gửi file cho System Host ký)
+Unsafe: Không
+
+10.4.6.2. Worker huấn luyện quality assessor
+python_workers/scrapers/train_quality_assessor.py
+Chức năng: Huấn luyện một mô hình nhỏ (MLP hoặc DistilBERT) để đánh giá chất lượng câu trả lời dựa trên các đặc trưng: độ dài, số code block, độ tương đồng với câu hỏi, v.v. Thay thế hoặc bổ trợ cho SLM trong QualityAssessor (Rust) để giảm độ trễ.
+Cách thức: Tạo tập dữ liệu gán nhãn (chất lượng cao/thấp) từ các câu trả lời đã được con người hoặc SLM đánh giá. Huấn luyện mô hình, xuất ONNX, chuyển sang INT4. Triển khai qua Model Manager.
+Dependencies: torch, sklearn, onnx, pyo3
+Unsafe: Không
+
+10.4.6.3. Worker học cấu trúc DOM cho response parser
+python_workers/scrapers/learn_dom_structure.py
+Chức năng: Phân tích cấu trúc HTML của các trang trả lời (DeepSeek, ChatGPT, Gemini) để tự động sinh ra selector (XPath/CSS) cho ResponseParser (Rust). Giảm thiểu việc cập nhật thủ công khi giao diện thay đổi.
+Cách thức: Thu thập mẫu HTML từ browser headless, dùng thư viện beautifulsoup4 và lxml để phát hiện vùng chứa câu trả lời dựa trên văn bản mẫu. Xuất ra file JSON cấu hình (selector cho từng platform). File này được SIH tải xuống và dùng trong ResponseParser.
+Dependencies: beautifulsoup4, lxml, requests
+Unsafe: Không
+
+10.4.6.4. Worker phát hiện knowledge gap từ dữ liệu thu thập
+python_workers/scrapers/detect_knowledge_gap.py
+Chức năng: Phân tích các câu hỏi đã được hỏi và câu trả lời thu được để xác định chủ đề còn thiếu hoặc trả lời kém chất lượng. Tạo báo cáo gửi đến SIH để điều chỉnh ưu tiên thu thập.
+Cách thức: Dùng embedding (từ SIH) để nhóm các câu hỏi, tính độ phủ chủ đề. Phát hiện các câu hỏi có quality score thấp lặp lại. Xuất danh sách knowledge gap dưới dạng JSON, SIH dùng để sinh câu hỏi mới trong QueryGenerator.
+Dependencies: numpy, scikit-learn, pyo3 (aios_data)
+Unsafe: Không
+
+10.4.6.5. Tích hợp với System Host (Model Manager)
+Bổ sung vào rust/system_host/src/ai/model_manager.rs (Phase 7)
+Chức năng: Cho phép nhận proposal model từ Python worker dành riêng cho web scraper (model cải thiện query generator, quality assessor). Xác minh chữ ký, chạy A/B testing nếu cần, sau đó triển khai và thông báo cho SIH.
+Cách thức: Tương tự như các model supervisor, nhưng phạm vi chỉ trong SIH.
+Dependencies: spark::crypto, common::snapshot
+Unsafe: Có – FFI Ada
+
+10.4.6.6. Cơ chế kích hoạt worker
+rust/sih/src/web_scraper/model_updater.rs (mới, thuộc Phase 6)
+Chức năng: Định kỳ (ví dụ mỗi tuần) hoặc khi có đủ dữ liệu mới (1000 câu trả lời), gửi yêu cầu đến System Host để khởi động Python worker tương ứng.
+Cách thức: Dùng gRPC gọi SystemHost::start_python_worker(worker_name, params). Theo dõi kết quả, nếu thành công thì tải model mới về và cập nhật QueryGenerator hoặc QualityAssessor.
+Dependencies: tonic (gRPC), system_host::worker_manager
+Unsafe: Không
+
 
 ### 10.5. Cơ chế đồng bộ và điều khiển thần kinh (bổ sung cho Phase 10)
 
@@ -3383,7 +3808,10 @@ Hệ thống AIOS sử dụng machine learning để dự đoán tải, đề xu
 - Các script Python nên sử dụng `pyo3` thay vì gRPC để truy cập dữ liệu, đảm bảo hiệu năng.  
 - **SQLite chỉ dùng cho lịch sử (full metrics, logs). Luồng chính dùng thread‑local buffer, crossbeam channel, ring buffer để đảm bảo hiệu năng cao.**  
 - LNN weights được nhúng trực tiếp vào Rust code dưới dạng const array, tránh runtime overhead.
-
+- Các Python worker liên quan đến web scraper chỉ chạy khi hệ thống rảnh (potential > 0.6) và có đủ dữ liệu huấn luyện mới.
+- Model mới sau khi được SIH sử dụng phải trải qua A/B testing (so sánh với model cũ trên một tập câu hỏi kiểm tra) trước khi thay thế hoàn toàn.
+- Toàn bộ quy trình (thu thập → huấn luyện → triển khai) được ghi vào Database Tunnel để kiểm toán.
+- Tuyệt đối không để Python worker truy cập trực tiếp vào browser controller hay tài khoản người dùng – chỉ làm việc với dữ liệu đã được lọc và ẩn danh.
 ---
 
 PHASE 11: KIỂM THỬ TỔNG THỂ VÀ TỐI ƯU HÓA – ĐÃ SỬA (HẠN CHẾ SQLITE, TÍCH HỢP NEURON)
@@ -3622,7 +4050,19 @@ Unsafe: Không
 scripts/export_lnn_model.sh
 Chức năng: Gọi Python worker để huấn luyện LNN và chuyển sang Rust code.
 Unsafe: Không
+####11.4.10. Web scraper tests
+tests/rust/web_scraper_tests.rs
+Chức năng: Unit test cho PriorityEngine, QueryOrchestrator, QualityAssessor với mock browser.
+Unsafe: Không
 
+tests/tier2/scraper_e2e_test.rs
+Chức năng: Chạy headless Chromium thật kết nối đến một trang web giả lập (dùng mock-oauth2-server hoặc wiremock). Kiểm tra toàn bộ luồng đăng nhập, hỏi, parse, fallback.
+Yêu cầu: Cần Docker để chạy mock server.
+Unsafe: Có (gọi FFI browser thật)
+
+tests/chaos/scraper_failure_test.py
+Chức năng: Mô phỏng mất mạng, platform trả lời rác, CAPTCHA xuất hiện – kiểm tra scraper không crash và có fallback đúng.
+Unsafe: Không
 11.5. Chức năng của thành phần kiểm thử
 Unit tests: Kiểm tra từng hàm, module riêng lẻ, đảm bảo logic đúng.
 

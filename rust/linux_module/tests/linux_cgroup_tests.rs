@@ -1,16 +1,18 @@
 //! Tests for cgroup freeze/thaw (requires root)
-use linux_module::zig_bindings;
+use linux_module::zig_bindings::{freeze_cgroup, thaw_cgroup};
 use std::env;
-use std::ffi::CString;
 use std::fs;
 use tempfile::tempdir;
 
-fn with_temp_base<F, T>(f: F) -> T
+fn with_temp_base<F>(f: F) -> anyhow::Result<()>
 where
-    F: FnOnce() -> T,
+    F: FnOnce() -> anyhow::Result<()>,
 {
-    let temp_dir = tempdir().unwrap();
-    let base_path = temp_dir.path().to_str().unwrap();
+    let temp_dir = tempdir()?;
+    let base_path = temp_dir
+        .path()
+        .to_str()
+        .ok_or_else(|| anyhow::anyhow!("Invalid path"))?;
     env::set_var("AIOS_BASE_DIR", base_path);
     let result = f();
     env::remove_var("AIOS_BASE_DIR");
@@ -18,66 +20,78 @@ where
 }
 
 fn is_root() -> bool {
+    // SAFETY: getuid() is a simple read-only syscall that returns the real user ID.
+    // It's always safe to call and cannot cause undefined behavior.
     unsafe { libc::getuid() == 0 }
 }
 
 #[test]
-fn test_cgroup_freeze_thaw() {
+fn test_cgroup_freeze_thaw() -> anyhow::Result<()> {
     if !is_root() {
-        eprintln!("Skipping cgroup test: not root");
-        return;
+        tracing::info!("Skipping cgroup test: not root");
+        return Ok(());
     }
 
     with_temp_base(|| {
-        // Tạo cgroup test trong /sys/fs/cgroup (cần root)
         let cgroup_name = "aios_test_cgroup";
         let cgroup_path = format!("/sys/fs/cgroup/{}", cgroup_name);
-        fs::create_dir_all(&cgroup_path).unwrap();
+        fs::create_dir_all(&cgroup_path)?;
 
-        // Tạo một process con để đặt vào cgroup
-        let mut child = std::process::Command::new("sleep")
-            .arg("30")
-            .spawn()
-            .unwrap();
+        let mut child = std::process::Command::new("sleep").arg("30").spawn()?;
         let pid = child.id();
 
-        // Ghi PID vào cgroup.procs
-        fs::write(format!("{}/cgroup.procs", cgroup_path), pid.to_string()).unwrap();
+        fs::write(format!("{}/cgroup.procs", cgroup_path), pid.to_string())?;
 
-        // Freeze cgroup
-        let path_cstr = CString::new(cgroup_path.clone()).unwrap();
-        let freeze_result = unsafe { zig_bindings::zig_cgroup_freeze(path_cstr.as_ptr()) };
-        assert_eq!(freeze_result, 0, "Freeze should succeed");
+        let freeze_result = freeze_cgroup(&cgroup_path);
+        assert!(
+            freeze_result.is_ok(),
+            "Freeze should succeed: {:?}",
+            freeze_result
+        );
 
-        // Kiểm tra trạng thái freeze (đọc cgroup.freeze)
-        let state =
-            fs::read_to_string(format!("{}/cgroup.freeze", cgroup_path)).unwrap_or_default();
+        let state = fs::read_to_string(format!("{}/cgroup.freeze", cgroup_path))?;
         assert_eq!(state.trim(), "1");
 
-        // Thaw cgroup
-        let thaw_result = unsafe { zig_bindings::zig_cgroup_thaw(path_cstr.as_ptr()) };
-        assert_eq!(thaw_result, 0, "Thaw should succeed");
+        let thaw_result = thaw_cgroup(&cgroup_path);
+        assert!(
+            thaw_result.is_ok(),
+            "Thaw should succeed: {:?}",
+            thaw_result
+        );
 
-        let state =
-            fs::read_to_string(format!("{}/cgroup.freeze", cgroup_path)).unwrap_or_default();
+        let state = fs::read_to_string(format!("{}/cgroup.freeze", cgroup_path))?;
         assert_eq!(state.trim(), "0");
 
-        // Cleanup
-        child.kill().unwrap();
-        fs::remove_dir_all(&cgroup_path).unwrap();
-    });
+        let _ = child.kill();
+        let _ = fs::remove_dir_all(&cgroup_path);
+        Ok(())
+    })
 }
 
 #[test]
-fn test_cgroup_freeze_nonexistent() {
+fn test_cgroup_freeze_nonexistent() -> anyhow::Result<()> {
     if !is_root() {
-        eprintln!("Skipping test: not root");
-        return;
+        tracing::info!("Skipping test: not root");
+        return Ok(());
     }
 
     with_temp_base(|| {
-        let fake_path = CString::new("/sys/fs/cgroup/nonexistent").unwrap();
-        let result = unsafe { zig_bindings::zig_cgroup_freeze(fake_path.as_ptr()) };
-        assert!(result < 0, "Freezing nonexistent cgroup should fail");
-    });
+        let result = freeze_cgroup("/sys/fs/cgroup/nonexistent");
+        assert!(result.is_err(), "Freezing nonexistent cgroup should fail");
+        Ok(())
+    })
+}
+
+#[test]
+fn test_cgroup_thaw_nonexistent() -> anyhow::Result<()> {
+    if !is_root() {
+        tracing::info!("Skipping test: not root");
+        return Ok(());
+    }
+
+    with_temp_base(|| {
+        let result = thaw_cgroup("/sys/fs/cgroup/nonexistent");
+        assert!(result.is_err(), "Thawing nonexistent cgroup should fail");
+        Ok(())
+    })
 }

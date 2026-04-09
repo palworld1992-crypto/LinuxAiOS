@@ -28,6 +28,10 @@ impl<T> RingBuffer<T> {
             return false;
         }
         let idx = head & self.mask;
+        // SAFETY: idx is computed as head & mask, where mask = capacity - 1 (power of 2).
+        // This guarantees idx is always within bounds [0, capacity).
+        // The slot at idx is guaranteed to be uninitialized (checked by head-tail comparison).
+        // No other thread can write to this slot because we have exclusive &mut self access.
         unsafe {
             self.buffer[idx].as_mut_ptr().write(value);
         }
@@ -42,6 +46,10 @@ impl<T> RingBuffer<T> {
             return None;
         }
         let idx = tail & self.mask;
+        // SAFETY: idx is computed as tail & mask, where mask = capacity - 1 (power of 2).
+        // This guarantees idx is always within bounds [0, capacity).
+        // The slot at idx is guaranteed to be initialized (tail != head means data exists).
+        // No other thread can read this slot because we have exclusive &mut self access.
         let value = unsafe { self.buffer[idx].as_ptr().read() };
         self.tail.store(tail.wrapping_add(1), Ordering::Release);
         Some(value)

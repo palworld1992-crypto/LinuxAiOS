@@ -1,50 +1,45 @@
-pragma Style_Checks (Off);
+--  SPARK_Mode (Off): Wrapper calls external liboqs library (OQS_SIG_ml_dsa_65_verify)
+--  which cannot be formally verified by SPARK.
 pragma SPARK_Mode (Off);
 
 with Interfaces.C; use Interfaces.C;
-with Interfaces.C.Strings;
 with System;
+with System.Address_To_Access_Conversions;
 
 separate (Crypto_Engine)
 
 procedure Dilithium_Verify
-  (Public_Key   : Key_1952;
+  (Public_Key   : System.Address;
    Message      : System.Address;
    Message_Len  : Interfaces.C.size_t;
-   Signature    : Key_3309;
-   Status       : out Interfaces.C.int) is
+   Signature    : System.Address;
+   Signature_Len : Interfaces.C.size_t;
+   Status_Ptr   : System.Address) is
 
-   use Interfaces.C.Strings;
-
-   C_Name : chars_ptr := New_String (Dilithium_Name_Str);
-   sig    : System.Address;
-   res    : Interfaces.C.int;
+   package Int_Conv is new System.Address_To_Access_Conversions(Interfaces.C.int);
+   Status_Access : constant Int_Conv.Object_Pointer := Int_Conv.To_Pointer(Status_Ptr);
+   Result : Interfaces.C.int;
 begin
-   sig := OQS_SIG_new (C_Name);
-   Free (C_Name);
-
-   if sig = System.Null_Address then
-      Status := -1;
+   -- Ensure liboqs is initialized
+   Ensure_OQS_Initialized;
+   
+   if Signature = System.Null_Address or else Public_Key = System.Null_Address or else Status_Ptr = System.Null_Address then
+      Status_Access.all := -1;
       return;
    end if;
 
-   res := OQS_SIG_verify 
-     (sig, 
-      Message, 
+   -- Use void procedure with out parameter for Ada compatibility
+   OQS_ML_DSA_65_Verify_Out 
+     (Message, 
       Message_Len, 
-      Signature'Address, 
-      Signature'Length, 
-      Public_Key'Address);
+      Signature, 
+      Signature_Len, 
+      Public_Key,
+      Result);
 
-   OQS_SIG_free (sig);
-   Status := res;
-   return;
+   Status_Access.all := Result;
 
 exception
    when others =>
-      if sig /= System.Null_Address then
-         OQS_SIG_free (sig);
-      end if;
-      Status := -1;
-      return;
+      Status_Access.all := -2;  -- Different error code for exception
 end Dilithium_Verify;

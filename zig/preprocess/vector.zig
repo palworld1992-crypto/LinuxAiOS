@@ -8,7 +8,7 @@ pub export fn f32_dot_product_simd(
     a: [*]f32,
     b: [*]f32,
     len: usize,
-) f32 {
+) callconv(.c) f32 {
     if (len == 0) return 0.0;
 
     var sum: f32 = 0.0;
@@ -31,7 +31,7 @@ pub export fn f32_dot_product_simd(
 pub export fn f32_normalize_simd(
     a: [*]f32,
     len: usize,
-) f32 {
+) callconv(.c) f32 {
     if (len == 0) return 0.0;
 
     var sum_squared: f32 = 0.0;
@@ -54,7 +54,7 @@ pub export fn f32_scale_simd(
     a: [*]f32,
     scale: f32,
     len: usize,
-) void {
+) callconv(.c) void {
     var i: usize = 0;
     const vscale: @Vector(SIMD_WIDTH_F32, f32) = .{ scale, scale, scale, scale };
 
@@ -76,7 +76,7 @@ pub export fn f32_add_simd(
     a: [*]f32,
     b: [*]f32,
     len: usize,
-) void {
+) callconv(.c) void {
     var i: usize = 0;
 
     while (i + SIMD_WIDTH_F32 <= len) : (i += SIMD_WIDTH_F32) {
@@ -98,7 +98,7 @@ pub export fn f32_sub_simd(
     a: [*]f32,
     b: [*]f32,
     len: usize,
-) void {
+) callconv(.c) void {
     var i: usize = 0;
 
     while (i + SIMD_WIDTH_F32 <= len) : (i += SIMD_WIDTH_F32) {
@@ -120,7 +120,7 @@ pub export fn f32_l2_distance_sq_simd(
     a: [*]f32,
     b: [*]f32,
     len: usize,
-) f32 {
+) callconv(.c) f32 {
     if (len == 0) return 0.0;
 
     var sum: f32 = 0.0;
@@ -146,7 +146,7 @@ pub export fn f64_dot_product_simd(
     a: [*]f64,
     b: [*]f64,
     len: usize,
-) f64 {
+) callconv(.c) f64 {
     if (len == 0) return 0.0;
 
     var sum: f64 = 0.0;
@@ -169,7 +169,7 @@ pub export fn f64_dot_product_simd(
 pub export fn f64_normalize_simd(
     a: [*]f64,
     len: usize,
-) f64 {
+) callconv(.c) f64 {
     if (len == 0) return 0.0;
 
     var sum_squared: f64 = 0.0;
@@ -192,7 +192,7 @@ pub export fn f64_scale_simd(
     a: [*]f64,
     scale: f64,
     len: usize,
-) void {
+) callconv(.c) void {
     var i: usize = 0;
     const vscale: @Vector(SIMD_WIDTH_F64, f64) = .{ scale, scale };
 
@@ -211,7 +211,7 @@ pub export fn f64_scale_simd(
 pub export fn i32_sum_simd(
     a: [*]i32,
     len: usize,
-) i32 {
+) callconv(.c) i32 {
     var sum: i32 = 0;
     var i: usize = 0;
 
@@ -230,7 +230,7 @@ pub export fn i32_sum_simd(
 pub export fn i32_max_simd(
     a: [*]i32,
     len: usize,
-) i32 {
+) callconv(.c) i32 {
     if (len == 0) return 0;
 
     var max_val: i32 = a[0];
@@ -252,7 +252,7 @@ pub export fn i32_max_simd(
 pub export fn i32_min_simd(
     a: [*]i32,
     len: usize,
-) i32 {
+) callconv(.c) i32 {
     if (len == 0) return 0;
 
     var min_val: i32 = a[0];

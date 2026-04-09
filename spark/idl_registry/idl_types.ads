@@ -1,4 +1,3 @@
-pragma Style_Checks (Off);
 with Interfaces.C;
 
 package IDL_Types is

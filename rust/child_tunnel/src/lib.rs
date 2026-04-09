@@ -1,12 +1,16 @@
 //! Child Tunnel – blockchain for internal components of a supervisor.
 
-use anyhow::Result;
+pub mod registry;
+pub use registry::component_registry::ComponentRegistry;
+
+use anyhow::{anyhow, Result};
 use common::utils::current_timestamp_ms;
-use parking_lot::RwLock;
+use dashmap::DashMap;
 use scc::crypto::{dilithium_keypair, kyber_keypair};
 use serde::{Deserialize, Serialize};
 use sha2::Digest;
 use std::collections::HashMap;
+use std::sync::atomic::{AtomicU64, Ordering};
 
 pub type ComponentKeypair = ([u8; 1568], [u8; 2400], [u8; 1952], [u8; 4032]);
 
@@ -22,7 +26,7 @@ pub struct ComponentKey {
 #[derive(Debug, Clone, Serialize, Deserialize)]
 pub struct ComponentState {
     pub component_id: String,
-    pub state_hash: Vec<u8>, // hash of component's state (e.g., model hash)
+    pub state_hash: Vec<u8>,
     pub last_health_check: u64,
     pub is_active: bool,
 }
@@ -37,8 +41,9 @@ pub struct ChildTunnelLedger {
 }
 
 pub struct ChildTunnel {
-    ledger: RwLock<ChildTunnelLedger>,
-    history: RwLock<Vec<ChildTunnelLedger>>, // limited history (e.g., last 3)
+    ledger: DashMap<(), ChildTunnelLedger>,
+    history: DashMap<u64, ChildTunnelLedger>,
+    history_seq: AtomicU64,
 }
 
 impl Default for ChildTunnel {
@@ -56,9 +61,12 @@ impl ChildTunnel {
             prev_hash: vec![0u8; 32],
             hash: vec![0u8; 32],
         };
+        let ledger_map = DashMap::new();
+        ledger_map.insert((), ledger);
         Self {
-            ledger: RwLock::new(ledger),
-            history: RwLock::new(Vec::new()),
+            ledger: ledger_map,
+            history: DashMap::new(),
+            history_seq: AtomicU64::new(0),
         }
     }
 
@@ -69,7 +77,10 @@ impl ChildTunnel {
         kyber_pub: Vec<u8>,
         dilithium_pub: Vec<u8>,
     ) -> Result<()> {
-        let mut ledger = self.ledger.write();
+        let mut ledger_guard = self
+            .ledger
+            .get_mut(&())
+            .ok_or_else(|| anyhow!("Ledger missing"))?;
         let key = ComponentKey {
             component_id: component_id.clone(),
             kyber_public: kyber_pub,
@@ -77,8 +88,8 @@ impl ChildTunnel {
             created_at: current_timestamp_ms(),
             expires_at: current_timestamp_ms() + 30 * 24 * 3600 * 1000, // 30 days
         };
-        ledger.keys.insert(component_id, key);
-        self.commit_ledger(&mut ledger)?;
+        ledger_guard.keys.insert(component_id, key);
+        self.commit_ledger(&mut *ledger_guard)?;
         Ok(())
     }
 
@@ -124,15 +135,18 @@ impl ChildTunnel {
         state_hash: Vec<u8>,
         is_active: bool,
     ) -> Result<()> {
-        let mut ledger = self.ledger.write();
+        let mut ledger_guard = self
+            .ledger
+            .get_mut(&())
+            .ok_or_else(|| anyhow!("Ledger missing"))?;
         let state = ComponentState {
             component_id: component_id.clone(),
             state_hash,
             last_health_check: current_timestamp_ms(),
             is_active,
         };
-        ledger.states.insert(component_id, state);
-        self.commit_ledger(&mut ledger)?;
+        ledger_guard.states.insert(component_id, state);
+        self.commit_ledger(&mut *ledger_guard)?;
         Ok(())
     }
 
@@ -145,35 +159,56 @@ impl ChildTunnel {
         let hash = sha2::Sha256::digest(&bytes).to_vec();
         ledger.hash = hash;
         ledger.version += 1;
-        // Store in history (keep last 3)
-        let mut history = self.history.write();
-        history.push(ledger.clone());
-        if history.len() > 3 {
-            history.remove(0);
+
+        // Store in history with sequence number
+        let seq = self.history_seq.fetch_add(1, Ordering::Relaxed);
+        self.history.insert(seq, ledger.clone());
+
+        // Keep only latest 3 snapshots
+        while self.history.len() > 3 {
+            if let Some(min_entry) = self.history.iter().min_by_key(|e| *e.key()) {
+                self.history.remove(min_entry.key());
+            } else {
+                break;
+            }
         }
+
         Ok(())
     }
 
     /// Rollback to previous ledger version.
     pub fn rollback(&self) -> Option<ChildTunnelLedger> {
-        let mut history = self.history.write();
-        if history.len() >= 2 {
-            let prev = history[history.len() - 2].clone();
-            *self.ledger.write() = prev.clone();
-            let len = history.len(); // <-- tính trước để tránh borrow conflict
-            history.truncate(len - 1);
-            Some(prev)
-        } else {
-            None
+        // Collect all history entries
+        let mut entries: Vec<(u64, ChildTunnelLedger)> = self
+            .history
+            .iter()
+            .map(|e| (*e.key(), e.value().clone()))
+            .collect();
+        if entries.len() < 2 {
+            return None;
         }
+        // Sort by sequence ascending
+        entries.sort_by_key(|(seq, _)| *seq);
+        let len = entries.len();
+        let (current_seq, _) = entries[len - 1];
+        let (_, prev_ledger) = &entries[len - 2];
+        // Remove latest from history
+        self.history.remove(&current_seq);
+        // Set current ledger to previous (already in history) but also update ledger field
+        self.ledger.insert((), prev_ledger.clone());
+        Some(prev_ledger.clone())
     }
 
     pub fn get_component_key(&self, component_id: &str) -> Option<ComponentKey> {
-        self.ledger.read().keys.get(component_id).cloned()
+        self.ledger
+            .get(&())
+            .and_then(|ledger| ledger.keys.get(component_id).cloned())
     }
 
     pub fn get_component_state(&self, component_id: &str) -> Option<ComponentState> {
-        self.ledger.read().states.get(component_id).cloned()
+        self.ledger
+            .get(&())
+            .and_then(|ledger| ledger.states.get(component_id).cloned())
     }
 }
 
@@ -182,45 +217,49 @@ mod tests {
     use super::*;
 
     #[test]
-    fn test_child_tunnel_new() {
+    fn test_child_tunnel_new() -> anyhow::Result<()> {
         let tunnel = ChildTunnel::new();
         assert!(tunnel.get_component_key("nonexistent").is_none());
         assert!(tunnel.get_component_state("nonexistent").is_none());
+        Ok(())
     }
 
     #[test]
-    fn test_register_component_no_crypto() {
+    fn test_register_component_no_crypto() -> anyhow::Result<()> {
         let tunnel = ChildTunnel::new();
         let result =
             tunnel.register_component("test_component".to_string(), vec![0u8; 32], vec![0u8; 32]);
         assert!(result.is_ok());
 
-        let key = tunnel.get_component_key("test_component").unwrap();
+        let key = tunnel
+            .get_component_key("test_component")
+            .ok_or_else(|| anyhow::anyhow!("Component key not found"))?;
         assert_eq!(key.component_id, "test_component");
+        Ok(())
     }
 
     #[test]
-    fn test_update_state() {
+    fn test_update_state() -> anyhow::Result<()> {
         let tunnel = ChildTunnel::new();
         let result = tunnel.update_state("test_component".to_string(), vec![1u8; 32], true);
         assert!(result.is_ok());
 
-        let state = tunnel.get_component_state("test_component").unwrap();
+        let state = tunnel
+            .get_component_state("test_component")
+            .ok_or_else(|| anyhow::anyhow!("Component state not found"))?;
         assert!(state.is_active);
+        Ok(())
     }
 
     #[test]
-    fn test_rollback() {
+    fn test_rollback() -> anyhow::Result<()> {
         let tunnel = ChildTunnel::new();
 
-        tunnel
-            .register_component("comp1".to_string(), vec![0u8; 32], vec![0u8; 32])
-            .unwrap();
-        tunnel
-            .register_component("comp2".to_string(), vec![0u8; 32], vec![0u8; 32])
-            .unwrap();
+        tunnel.register_component("comp1".to_string(), vec![0u8; 32], vec![0u8; 32])?;
+        tunnel.register_component("comp2".to_string(), vec![0u8; 32], vec![0u8; 32])?;
 
         let result = tunnel.rollback();
         assert!(result.is_some());
+        Ok(())
     }
 }

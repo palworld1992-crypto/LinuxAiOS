@@ -1,11 +1,10 @@
 //! Approval manager – quản lý phê duyệt model supervisor
 
-use parking_lot::RwLock;
-use std::collections::HashMap;
+use dashmap::DashMap;
 use tracing::info;
 
 pub struct ApprovalManager {
-    pending_proposals: RwLock<HashMap<u64, Proposal>>,
+    pending_proposals: DashMap<u64, Proposal>,
 }
 
 #[derive(Debug, Clone)]
@@ -24,13 +23,12 @@ impl Default for ApprovalManager {
 impl ApprovalManager {
     pub fn new() -> Self {
         Self {
-            pending_proposals: RwLock::new(HashMap::new()),
+            pending_proposals: DashMap::new(),
         }
     }
 
     pub fn add_proposal(&self, id: u64, description: String, expires_at: u64) {
-        let mut pending = self.pending_proposals.write();
-        pending.insert(
+        self.pending_proposals.insert(
             id,
             Proposal {
                 id,
@@ -42,16 +40,17 @@ impl ApprovalManager {
     }
 
     pub fn approve(&self, id: u64) -> Option<Proposal> {
-        let mut pending = self.pending_proposals.write();
-        pending.remove(&id)
+        self.pending_proposals.remove(&id).map(|(_, v)| v)
     }
 
     pub fn reject(&self, id: u64) -> Option<Proposal> {
-        let mut pending = self.pending_proposals.write();
-        pending.remove(&id)
+        self.pending_proposals.remove(&id).map(|(_, v)| v)
     }
 
     pub fn list_pending(&self) -> Vec<Proposal> {
-        self.pending_proposals.read().values().cloned().collect()
+        self.pending_proposals
+            .iter()
+            .map(|r| r.value().clone())
+            .collect()
     }
 }

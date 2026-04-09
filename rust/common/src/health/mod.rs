@@ -1,5 +1,6 @@
 use serde::{Deserialize, Serialize};
 use std::time::{SystemTime, UNIX_EPOCH};
+use tracing::warn;
 
 #[derive(Debug, Clone, Copy, PartialEq, Eq, Serialize, Deserialize)]
 pub enum HealthErrorCode {
@@ -26,10 +27,13 @@ pub struct HealthError {
 
 impl HealthError {
     pub fn new(code: HealthErrorCode, message: &str, remediation: &str) -> Self {
-        let timestamp = SystemTime::now()
-            .duration_since(UNIX_EPOCH)
-            .map(|d| d.as_secs())
-            .unwrap_or(0);
+        let timestamp = match SystemTime::now().duration_since(UNIX_EPOCH) {
+            Ok(duration) => duration.as_secs(),
+            Err(_) => {
+                warn!("System time before UNIX EPOCH, using 0 as timestamp");
+                0
+            }
+        };
         Self {
             code,
             message: message.to_string(),

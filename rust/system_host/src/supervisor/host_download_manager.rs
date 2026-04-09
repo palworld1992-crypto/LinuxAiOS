@@ -3,7 +3,7 @@
 use anyhow::{anyhow, Result};
 use sha2::{Digest, Sha256};
 use std::path::PathBuf;
-use tracing::info;
+use tracing::{info, warn};
 
 pub struct HostDownloadManager {
     download_dir: PathBuf,
@@ -38,7 +38,13 @@ impl HostDownloadManager {
                 ));
             }
         }
-        let filename = url.split('/').next_back().unwrap_or("download");
+        let filename = match url.split('/').next_back() {
+    Some(name) => name,
+    None => {
+        warn!(url = %url, "Could not extract filename from URL, using default");
+        "download"
+    }
+};
         let path = self.download_dir.join(filename);
         std::fs::write(&path, bytes)?;
         Ok(path)

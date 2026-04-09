@@ -2,15 +2,15 @@
 //! Uses `userfaultfd` crate to handle page faults on memory regions that have been paged out.
 
 use anyhow::{anyhow, Result};
+use dashmap::DashMap;
 use libc::{syscall, SYS_userfaultfd, O_CLOEXEC, O_NONBLOCK};
 use memmap2::MmapMut;
-use parking_lot::RwLock;
-use std::collections::HashMap;
 use std::fs::File;
 use std::io::Read;
 use std::os::unix::io::{AsRawFd, FromRawFd, RawFd};
 use std::path::PathBuf;
 use std::sync::Arc;
+use std::sync::OnceLock;
 use std::thread;
 use tracing::{error, info, warn};
 use userfaultfd::{Event, Uffd};
@@ -18,25 +18,17 @@ use zstd::stream::Decoder;
 
 use crate::tensor::TensorPool;
 
-/// Metadata for a paged-out page (or region).
 #[derive(Clone)]
 struct PageOutEntry {
     compressed_path: PathBuf,
     size: usize,
-    #[allow(dead_code)]
-    offset: usize,
 }
 
-/// Userfault handler that monitors memory regions and restores pages on demand.
 pub struct UserfaultHandler {
-    /// Shared map from (uffd_fd, offset) to paged-out entry.
-    paged_out: Arc<RwLock<HashMap<(RawFd, usize), PageOutEntry>>>,
-    /// Map from region base address to (uffd, size, fd) – only used for unregistration.
-    regions: RwLock<HashMap<usize, (Uffd, usize, RawFd)>>,
-    /// Thread handles for each registered region.
-    threads: RwLock<HashMap<RawFd, thread::JoinHandle<()>>>,
-    /// Tensor pool reference (optional).
-    tensor_pool: Option<Arc<RwLock<TensorPool>>>,
+    paged_out: Arc<DashMap<(RawFd, usize), PageOutEntry>>,
+    regions: DashMap<usize, (Uffd, usize, RawFd)>,
+    threads: DashMap<RawFd, thread::JoinHandle<()>>,
+    tensor_pool: OnceLock<Arc<DashMap<(), TensorPool>>>,
 }
 
 impl Default for UserfaultHandler {
@@ -48,15 +40,15 @@ impl Default for UserfaultHandler {
 impl UserfaultHandler {
     pub fn new() -> Self {
         Self {
-            paged_out: Arc::new(RwLock::new(HashMap::new())),
-            regions: RwLock::new(HashMap::new()),
-            threads: RwLock::new(HashMap::new()),
-            tensor_pool: None,
+            paged_out: Arc::new(DashMap::new()),
+            regions: DashMap::new(),
+            threads: DashMap::new(),
+            tensor_pool: OnceLock::new(),
         }
     }
 
-    pub fn attach_tensor_pool(&mut self, pool: Arc<RwLock<TensorPool>>) {
-        self.tensor_pool = Some(pool);
+    pub fn attach_tensor_pool(&self, pool: Arc<DashMap<(), TensorPool>>) {
+        let _ = self.tensor_pool.set(pool);
     }
 
     /// Create a userfaultfd file descriptor.
@@ -83,8 +75,7 @@ impl UserfaultHandler {
 
         // Store the uffd for later unregistration
         {
-            let mut regions = self.regions.write();
-            regions.insert(addr, (uffd, size, fd));
+            self.regions.insert(addr, (uffd, size, fd));
         }
 
         // Spawn a thread to handle page faults for this region.
@@ -96,7 +87,7 @@ impl UserfaultHandler {
             let uffd = unsafe { Uffd::from_raw_fd(fd) };
             Self::run_loop(uffd, addr, size, paged_out);
         });
-        self.threads.write().insert(fd, handle);
+        self.threads.insert(fd, handle);
         Ok(fd)
     }
 
@@ -105,7 +96,7 @@ impl UserfaultHandler {
         mut uffd: Uffd,
         base_addr: usize,
         region_size: usize,
-        paged_out: Arc<RwLock<HashMap<(RawFd, usize), PageOutEntry>>>,
+        paged_out: Arc<DashMap<(RawFd, usize), PageOutEntry>>,
     ) {
         info!(
             "Userfault handler thread started for region at {:#x}",
@@ -137,7 +128,7 @@ impl UserfaultHandler {
         event: Event,
         base_addr: usize,
         region_size: usize,
-        paged_out: &Arc<RwLock<HashMap<(RawFd, usize), PageOutEntry>>>,
+        paged_out: &Arc<DashMap<(RawFd, usize), PageOutEntry>>,
     ) {
         match event {
             Event::Pagefault { addr, .. } => {
@@ -149,10 +140,7 @@ impl UserfaultHandler {
                 }
 
                 let fd = uffd.as_raw_fd();
-                let entry = {
-                    let map = paged_out.read();
-                    map.get(&(fd, offset)).cloned()
-                };
+                let entry = paged_out.get(&(fd, offset)).map(|r| r.value().clone());
 
                 if let Some(entry) = entry {
                     // Restore the page from compressed file
@@ -205,32 +193,29 @@ impl UserfaultHandler {
     pub fn page_out(
         &self,
         fd: RawFd,
-        offset: usize,
+        _offset: usize,
         size: usize,
         compressed_path: PathBuf,
     ) -> Result<()> {
         let entry = PageOutEntry {
             compressed_path,
             size,
-            offset,
         };
-        self.paged_out.write().insert((fd, offset), entry);
+        self.paged_out.insert((fd, _offset), entry);
         Ok(())
     }
 
     /// Remove a region (stop handling faults).
     pub fn unregister_region(&self, fd: RawFd) -> Result<()> {
-        if let Some(handle) = self.threads.write().remove(&fd) {
-            // Remove from regions map as well
-            let mut regions = self.regions.write();
-            let to_remove = regions
+        if let Some((_, handle)) = self.threads.remove(&fd) {
+            let to_remove = self
+                .regions
                 .iter()
-                .find(|(_, (_, _, f))| *f == fd)
-                .map(|(addr, _)| *addr);
+                .find(|r| r.value().2 == fd)
+                .map(|r| *r.key());
             if let Some(addr) = to_remove {
-                regions.remove(&addr);
+                self.regions.remove(&addr);
             }
-            // Join the thread
             handle
                 .join()
                 .map_err(|_| anyhow!("Failed to join thread"))?;
@@ -249,14 +234,16 @@ mod tests {
     #[test]
     fn test_userfault_handler() -> anyhow::Result<()> {
         // Kiểm tra xem userfaultfd có khả dụng không (cần CAP_SYS_ADMIN hoặc kernel hỗ trợ)
+        // SAFETY: Calling syscall SYS_userfaultfd with O_CLOEXEC is safe.
         let fd = unsafe { syscall(SYS_userfaultfd, O_CLOEXEC) };
         if fd < 0 {
-            eprintln!(
+            tracing::info!(
                 "Skipping test: userfaultfd not available (errno: {})",
                 std::io::Error::last_os_error()
             );
             return Ok(());
         }
+        // SAFETY: fd is a valid file descriptor from earlier syscall.
         unsafe { libc::close(fd as i32) };
 
         let handler = UserfaultHandler::new();
@@ -265,6 +252,7 @@ mod tests {
         let memfd = MemfdOptions::default().create("test")?;
         let size = 4096 * 2;
         memfd.as_file().set_len(size as u64)?;
+        // SAFETY: memfd.as_file() is a valid file descriptor, size is valid, and we have write access.
         let mmap = unsafe { MmapOptions::new().len(size).map_mut(memfd.as_file())? };
 
         // Try to register the region
@@ -288,7 +276,7 @@ mod tests {
                 };
 
                 if should_skip {
-                    eprintln!("Skipping test: userfaultfd operation not supported: {}", e);
+                    tracing::info!("Skipping test: userfaultfd operation not supported: {}", e);
                     return Ok(());
                 }
                 return Err(e);
@@ -297,6 +285,7 @@ mod tests {
 
         // Write some data
         let data = b"Hello, world!";
+        // SAFETY: mmap is a valid mutable mapping of at least `data.len()` bytes.
         unsafe {
             std::ptr::copy_nonoverlapping(data.as_ptr(), mmap.as_ptr() as *mut u8, data.len());
         }
@@ -309,6 +298,7 @@ mod tests {
         handler.page_out(fd, 0, 4096, compressed_path)?;
 
         // Access the page again – it should be restored
+        // SAFETY: mmap is a valid mapping and we're reading the first byte.
         let value = unsafe { *mmap.as_ptr() };
         assert_eq!(value, b'H');
 

@@ -15,5 +15,5 @@ pub use health_tunnel_impl::HealthTunnelImpl;
 pub use main_component::LinuxMain;
 pub use main_component::{HardwareMonitor, ProcessManager, SnapshotManager};
 pub use memory::{MemoryTieringManager, PinnedAppManager, UserfaultHandler};
-pub use supervisor::LinuxSupervisor;
+pub use supervisor::{LinuxSupervisor, SupervisorSharedState};
 pub use tensor::TensorPool;

@@ -7,9 +7,30 @@ edition.workspace = true
 common = { path = "../common" }
 scc = { path = "../scc" }
 anyhow = "1.0"
+thiserror = "1.0"
 serde = { version = "1.0", features = ["derive"] }
 serde_json = "1.0"
 tokio = { version = "1.0", features = ["full"] }
 tracing = "0.1"
-parking_lot = "0.12"
+dashmap = "6.0"
 hex = "0.4"
+axum = "0.7"
+tower = "0.4"
+jsonwebtoken = "9.2"
+tokio-tungstenite = "0.21"
+futures = "0.3"
+ringbuf = "0.4.8"
+crossbeam = "0.8"
+child_tunnel = { path = "../child_tunnel" }
+[lints.rust]
+unused = "deny"
+unused_must_use = "deny"
+
+[lints.clippy]
+unwrap_used = "deny"
+expect_used = "deny"
+print_stdout = "deny"
+print_stderr = "deny"
+todo = "deny"
+or_fun_call = "deny"
+disallowed_types = "deny"

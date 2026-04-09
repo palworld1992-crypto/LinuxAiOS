@@ -1,12 +1,11 @@
-use std::collections::HashMap;
-use parking_lot::RwLock;
-use transport_tunnel::{TransportTunnel, PeerId};
 use anyhow::Result;
+use dashmap::DashMap;
+use transport_tunnel::{PeerId, TransportTunnel};
 
 pub struct TransportConnectionManager {
     tunnel: TransportTunnel,
     my_id: PeerId,
-    peers: RwLock<HashMap<PeerId, String>>, // peer id -> address (for handshake)
+    peers: DashMap<PeerId, String>,
 }
 
 impl TransportConnectionManager {
@@ -14,7 +13,7 @@ impl TransportConnectionManager {
         Self {
             tunnel,
             my_id,
-            peers: RwLock::new(HashMap::new()),
+            peers: DashMap::new(),
         }
     }
 

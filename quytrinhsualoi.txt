@@ -1,0 +1,212 @@
+## 0. Nghiêm cấm vô hiệu hóa warning (BẮT BUỘC)
+
+## 0a. Quy tắc cho code kiểm thử (BẮT BUỘC)
+
+ **Các hành vi bị cấm:**
+  - **Cấm dùng `unwrap()` hoặc `expect()`** trong bất kỳ test function nào (unit test, integration test, doctest).
++ - **Cấm dùng `println!()` trong test code** (dùng `tracing::debug!` hoặc `tracing::info!` thay thế).
++ - **Cấm dùng `unwrap_or()`, `unwrap_or_else()`, `unwrap_or_default()`** trong test code (phải xử lý lỗi tường minh bằng `match` hoặc `?`).
+  - **Cấm viết test function không trả về `Result`** nếu có thể thất bại.
+  - **Cấm dùng `#[should_panic]`** để kiểm tra lỗi có thể xử lý bằng `Result`.
+- - **Cấm dùng `println!` để debug** trong test code (dùng `tracing` hoặc `eprintln!` nếu thực sự cần).
++ - **Cấm dùng `eprintln!`** trong production; trong test chỉ được dùng khi thực sự cần và phải có comment giải thích.
+## Mô tả về dùng vec!:
+1. Loại bỏ "Độ trễ không xác định" (Non-deterministic Latency)Cơ chế của Vec! là Dynamic Reallocation: khi bạn .push() vượt quá capacity, nó phải yêu cầu Hệ điều hành cấp một vùng nhớ mới, copy toàn bộ dữ liệu cũ sang và giải phóng vùng nhớ cũ.Cải thiện: Dùng Array [T; N] hoặc ArrayVec giúp triệt tiêu hoàn toàn quá trình này.Kết quả: Thời gian thực thi lệnh là hằng số ($O(1)$), không bao giờ bị "spike" (tăng vọt độ trễ) bất ngờ — điều bắt buộc đối với Transport Tunnel khi xử lý gói tin <1μs.
+2. Tránh "Page Fault" trong Kernel-spaceVec lưu dữ liệu trên Heap. Trong lập trình hệ thống, bộ nhớ Heap có thể bị đẩy xuống ổ cứng (Swap) nếu RAM đầy. Khi bạn truy cập vào một Vec đã bị swap, CPU sẽ bị khựng lại để chờ nạp dữ liệu từ disk (Page Fault).Cải thiện: Dùng Array hoặc SmallVec (với ngưỡng nhỏ) sẽ giữ dữ liệu trên Stack.Kết quả: Dữ liệu luôn nằm trong bộ nhớ vật lý gần CPU nhất (L1/L2 Cache), đảm bảo các module như Interrupt Handler hay eBPF Router luôn phản hồi tức thì.
+3. Tối ưu hóa "Zero-copy" và Cache LocalityQuy tắc AIOS yêu cầu dùng ringbuf (SPSC) và memfd thay vì các cấu trúc dữ liệu chuẩn.Cơ chế Vec!: Thường xuyên làm phân mảnh bộ nhớ (Fragmentation).Cải thiện: ringbuf sử dụng một vùng nhớ liên tục cố định.Kết quả: CPU không phải nhảy đi nhảy lại giữa các địa chỉ nhớ khác nhau (tăng Cache Hit rate). Điều này cực kỳ quan trọng khi bạn chạy các mô hình LNN/SNN đòi hỏi tốc độ xử lý telemetry theo thời gian thực.
+4. An toàn trong môi trường Đa luồng (Lock-free)Dùng Vec! trong môi trường đa luồng thường đòi hỏi Mutex hoặc RwLock. AIOS cấm tuyệt đối điều này vì nó gây ra hiện tượng "tranh chấp khóa" (Lock contention).Cải thiện: DashMap hoặc evmap chia nhỏ dữ liệu thành các phân vùng (shards) để nhiều CPU ghi vào cùng lúc mà không đợi nhau.Kết quả: Tăng khả năng mở rộng (Scalability) của SIH Supervisor khi phải xử lý hàng ngàn proposal đồng thời.
+**Quy chuẩn bắt buộc:**
+```rust
+// Đúng
+#[test]
+fn test_something() -> anyhow::Result<()> {
+    let result = fallible_operation()?;
+    assert_eq!(result, expected);
+    Ok(())
+}
+
+// Sai – cấm
+#[test]
+fn test_something() {
+    let result = fallible_operation().unwrap(); // cấm
+}
+- **Cấm dùng `#[allow(...)]` trong test** – sửa warning giống production.
+- **Ngoại lệ duy nhất**: các bước setup không thể thất bại (ví dụ khởi tạo hằng số) và phải có comment.
+- **Rust**: Cấm sử dụng `#[allow(...)]`, `#![allow(...)]`, hoặc `#[expect(...)]` trong code production. Mọi warning phải được sửa bằng cách viết code đúng (ví dụ: xóa biến không dùng, xử lý `Result`, đặt đúng `pub`/`pub(crate)`).
+- **Zig**: Cấm dùng `@compileError` để bỏ qua warning. Phải sửa theo đúng cú pháp hoặc logic.
+- **Ada**: Cấm dùng `pragma Warnings (Off)` hoặc `pragma Suppress`. Phải sửa lỗi được cảnh báo.
+- **C++**: Cấm dùng `#pragma warning(disable: ...)` hoặc `__pragma(warning(disable: ...))` trong file gốc. Nếu cần thiết do thư viện bên thứ ba, phải đặt trong `#ifdef` có comment giải thích và chỉ áp dụng cho header đó.
+- **Hậu quả**: Nếu CI phát hiện bất kỳ `allow`/`disable` nào (trừ các trường hợp ngoại lệ đã được phê duyệt và ghi rõ trong file), build sẽ FAIL. AI phải tự sửa warning bằng cách viết code đúng, không được dùng "băng keo".
+
+## 0b. Nghiêm cấm xóa code do thiếu phụ thuộc giữa các phase (BẮT BUỘC)
+
+**Vấn đề:** AI có thể xóa các lệnh gọi hàm, import, hoặc toàn bộ module vì cho rằng phase sau chưa triển khai, dẫn đến mất cấu trúc và không thể tích hợp sau này.
+
+**Quy tắc cứng:**
+- **Không được xóa bất kỳ code nào** chỉ vì module/phụ thuộc chưa có ở phase hiện tại.
+- **Thay vào đó, phải giữ nguyên chữ ký** và sử dụng placeholder:
+  - **Rust:** `unimplemented!("Phase X sẽ implement hàm này")`
+  - **Zig:** `@panic("not implemented yet - Phase X")`
+  - **Ada:** `pragma Assert (False, "implement in Phase X");` hoặc `raise Program_Error;`
+  - **C++:** `throw std::logic_error("implement in Phase X");` (nếu exception được phép, hoặc `std::abort()`)
+- **Bắt buộc comment** ngay trên placeholder: `// TODO(Phase X): Liên kết với module Y khi Phase Z hoàn thành`
+- **Cấm xóa `use`/`import`/`with`** các module chưa tồn tại. Thay vào đó, giữ nguyên với `#[cfg(feature = "unstable")]` hoặc comment tạm thời, nhưng phải ghi rõ lý do.
+
+**Ví dụ đúng:**
+```rust
+// TODO(Phase 4): Gọi Windows Supervisor qua Transport Tunnel
+let result = windows_supervisor::handle_api_call(api_req)
+    .map_err(|e| anyhow!("Windows module not ready: {}", e))
+    .unwrap_or_else(|_| unimplemented!("Phase 4 will integrate Windows Supervisor"));
+0c. Quy định sửa file khi bị lỗi thiếu phụ thuộc (BẮT BUỘC)
+Nguyên tắc chung:
+Khi AI gặp lỗi biên dịch hoặc phân tích tĩnh liên quan đến thiếu module, thiếu import, thiếu hàm, thiếu kiểu (ví dụ: cannot find module, unresolved import, undefined function, no matching declaration), tuyệt đối không được xóa các dòng code gọi hoặc import. Thay vào đó, AI phải tạo hoặc sửa file để bổ sung định nghĩa thiếu dưới dạng stub/placeholder.
+
+Các tình huống cụ thể và cách sửa
+1. Thiếu module/file hoàn toàn (chưa tồn tại)
+Hành động: Tạo file mới tại đường dẫn đúng theo cấu trúc thư mục của dự án.
+
+Nội dung file: Toàn bộ các định nghĩa công khai (pub, pub(crate), export) cần thiết để thoả mãn các lệnh gọi đang có, mỗi hàm hoặc phương thức đều được implement bằng placeholder.
+
+Placeholder theo ngôn ngữ:
+
+Rust: unimplemented!("Phase X sẽ implement hàm này")
+
+Zig: @panic("not implemented yet - Phase X")
+
+Ada: pragma Assert (False, "implement in Phase X"); hoặc raise Program_Error;
+
+C++: throw std::logic_error("implement in Phase X"); (nếu exception được phép, nếu không thì std::abort())
+
+Bắt buộc có comment: // TODO(Phase X): Liên kết với module Y khi Phase Z hoàn thành (hoặc tương tự).
+
+2. File đã tồn tại nhưng thiếu hàm / phương thức / trait implementation
+Hành động: Mở file hiện có, thêm định nghĩa thiếu (hàm, phương thức, impl block) ngay tại vị trí thích hợp (theo thứ tự alphabet hoặc theo module).
+
+Nội dung thêm: Giống placeholder ở trên.
+
+Không được xóa các hàm khác đã có.
+
+3. Thiếu khai báo kiểu (struct, enum, type alias) cần cho FFI hoặc serialization
+Hành động: Thêm định nghĩa kiểu với #[repr(C)] (Rust) hoặc struct rỗng (C++) hoặc type tương ứng.
+
+Nội dung: Các trường dữ liệu có thể để trống hoặc đặt là dummy: u8, nhưng phải comment rõ là placeholder.
+
+4. Thiếu import / use / with (module chưa được khai báo trong file hiện tại)
+Hành động: Không được xóa dòng import. Thay vào đó, giữ nguyên dòng import và tạo module rỗng (nếu module chưa tồn tại) hoặc thêm pub use để export.
+
+Trường hợp đặc biệt: Nếu module chỉ tồn tại trong tương lai (Phase sau), có thể dùng conditional compilation:
+
+Rust: #[cfg(feature = "unstable")] kèm comment giải thích.
+
+C++: #ifdef FUTURE_PHASE ... #endif.
+
+Luôn kèm comment giải thích lý do và Phase dự kiến hoàn thành.
+
+5. Thiếu phụ thuộc trong file cấu hình build (Cargo.toml, build.zig, CMakeLists.txt, …)
+Hành động: Thêm dependency vào file cấu hình, nhưng phải ghi rõ version "0.0.0" hoặc path = "../stubs/..." và comment # TODO(Phase X): thay bằng dependency thật.
+
+Không được xóa các dependency khác.
+
+Quy trình thực hiện khi AI phát hiện lỗi thiếu phụ thuộc
+Dừng việc sinh code mới.
+
+Xác định chính xác module/hàm/kiểu nào bị thiếu, và Phase nào sẽ implement nó (dựa trên tài liệu thietke.txt hoặc yêu cầu người dùng).
+
+Tạo hoặc sửa file theo đúng quy tắc trên.
+
+Thêm comment TODO rõ ràng, bao gồm Phase chịu trách nhiệm.
+
+Kiểm tra lại rằng code sau khi sửa vẫn compile (với các placeholder).
+
+Báo cáo người dùng danh sách các file đã tạo/sửa và lý do.
+0d. Nghiêm cấm tạo lệnh giả / mock trái phép để build thành công (BẮT BUỘC)
+Vấn đề: AI có thể viết các hàm trả về giá trị mặc định (Ok(()), None, 0, String::new(), …) hoặc dùng todo!() mà không có kế hoạch thực sự, chỉ để làm hài lòng trình biên dịch hoặc vượt qua CI. Hành vi này che giấu lỗi thiết kế, dẫn đến tích hợp thất bại sau này.
+
+Các hành vi bị cấm tuyệt đối
+Trả về giá trị giả mặc định khi chưa biết logic thật
+
+Cấm: fn compute() -> u32 { 0 } (trong khi lẽ ra phải tính toán thật)
+
+Cấm: fn handle() -> Result<(), Error> { Ok(()) } (bỏ qua xử lý lỗi)
+
+Cấm: fn get_data() -> Vec<u8> { vec![] } (che giấu việc thiếu dữ liệu)
+
+Cho phép duy nhất: Sử dụng unimplemented!(), panic!(), todo!() có kèm TODO comment giải thích lý do và Phase sẽ implement.
+
+Dùng todo!() hoặc unimplemented!() không có comment
+
+Bắt buộc: Mỗi unimplemented!() phải có comment // TODO(Phase X): <nội dung> ngay trên dòng đó hoặc trong cùng block.
+ Các hành vi bị cấm tuyệt đối
+  Trả về giá trị giả mặc định khi chưa biết logic thật
++ - Cấm: `fn compute() -> Result<()> { Ok(()) }` (bỏ qua xử lý lỗi)
++ - Cấm: `fn compute() -> Vec<u8> { vec![] }` (che giấu việc thiếu dữ liệu)
++ - Cấm: `fn compute() -> Option<T> { None }` (che giấu lỗi)
++ - Cấm: `fn compute() -> u32 { 0 }` (trả về 0 giả)
+- - Cấm: fn compute() -> u32 { 0 } (trong khi lẽ ra phải tính toán thật)
+- - Cấm: fn handle() -> Result<(), Error> { Ok(()) } (bỏ qua xử lý lỗi)
+- - Cấm: fn get_data() -> Vec<u8> { vec![] } (che giấu việc thiếu dữ liệu)
++ - Cấm dùng `unwrap_or()`, `unwrap_or_else()`, `unwrap_or_default()` trong production (che giấu lỗi). Nếu thực sự cần giá trị mặc định, phải dùng `match` xử lý rõ ràng và ghi log.
+Ví dụ đúng:
+
+rust
+// TODO(Phase 4): Gọi Windows Supervisor qua Transport Tunnel
+unimplemented!("Phase 4 will integrate Windows Supervisor")
+Sử dụng conditional compilation (#[cfg(test)], #[cfg(debug_assertions)], …) để thay đổi logic trong production
+
+Cấm: Viết một phiên bản mock chỉ dùng trong test nhưng lại ảnh hưởng đến code production (ví dụ: #[cfg(not(test))] bỏ qua logic quan trọng).
+
+Ngoại lệ: Chỉ được dùng #[cfg(test)] cho test helpers hoặc mocks dùng riêng trong test, không được xuất hiện trong thư viện production trừ khi được người dùng cho phép rõ ràng.
+
+Trả về Ok(()) hay Ok(Default::default()) cho các hàm xử lý lỗi
+
+Cấm: Mọi hàm trả về Result không được trả về Ok(()) nếu chưa có logic thật.
+
+Thay vào đó: Dùng unimplemented!() hoặc Err(anyhow!("not implemented")) nếu muốn biểu diễn lỗi tạm thời (nhưng phải có TODO).
+
+Tạo std::sync::Mutex::new(()) giả hay dùng RwLock không cần thiết
+
+Cấm: Khởi tạo các đối tượng đồng bộ phức tạp mà không có lý do rõ ràng, chỉ để qua mặt borrow checker.
+
+Cho phép: Sử dụng () hoặc AtomicBool nếu thực sự là placeholder, nhưng phải ghi rõ TODO.
+
+Viết hàm extern "C" export mà thân hàm rỗng hoặc chỉ trả về 0
+
+Cấm: Xuất C API mà không có logic, vì các module khác gọi vào sẽ nhận hành vi không xác định.
+
+Bắt buộc: Thân hàm phải chứa abort() (C++) hoặc panic!("not implemented") (Rust) hoặc @panic("...") (Zig), kèm TODO.
++ ## 0e. Cấm dùng Mutex/RwLock với HashMap/HashSet trong production (BẮT BUỘC)
++ 
++ **Nguyên tắc:** Trong luồng xử lý chính, tuyệt đối không dùng `Mutex<HashMap>` hoặc `RwLock<HashMap>`.
++ **Thay thế bắt buộc:** Dùng `DashMap` (cho truy cập đồng thời), `evmap` (cho eventual consistency), hoặc `ringbuf` (cho hàng đợi SPSC).
++ **Lý do:** `Mutex/RwLock` gây contention cao, giảm hiệu năng trên multi‑core.
++ **Hậu quả:** CI sẽ fail nếu phát hiện pattern `Mutex<HashMap<` hoặc `RwLock<HashMap<` trong code production.
+## 0d. Cấm tuyệt đối Mutex và RwLock trong production (BẮT BUỘC)
+
+**Nguyên tắc:** Hệ thống AIOS yêu cầu lock‑free ở mức tối đa để đảm bảo hiệu năng real‑time và tránh contention. Do đó:
+
+- **Cấm sử dụng `std::sync::Mutex`, `std::sync::RwLock`, `parking_lot::Mutex`, `parking_lot::RwLock`** trong bất kỳ code production nào (kể cả trong các module dùng `parking_lot` thay thế).
+- **Ngoại lệ:** Chỉ được phép dùng nếu có lý do bất khả kháng (ví dụ tương tác với thư viện C bắt buộc phải dùng lock), và phải được phê duyệt bởi maintainer, kèm comment giải thích rõ ràng trong code và trong tài liệu. Trong trường hợp đó, **bắt buộc** dùng `parking_lot::Mutex` (vì hiệu năng tốt hơn) và phải đặt trong module có feature flag `unsafe_allow_mutex`.
+
+**Các giải pháp thay thế bắt buộc:**
+
+| Mục đích | Giải pháp lock‑free được khuyến nghị |
+|----------|----------------------------------------|
+| Map chia sẻ (key‑value) | `DashMap` (từ crate `dashmap`) hoặc `evmap` (eventual consistency) |
+| Set chia sẻ | `DashSet` (từ `dashmap`) |
+| Hàng đợi SPSC | `ringbuf::HeapRb` hoặc `crossbeam::queue::ArrayQueue` |
+| Hàng đợi MPSC | `crossbeam::channel` (unbounded hoặc bounded) |
+| Hàng đợi MPMC | `crossbeam::queue::SegQueue` (unbounded) |
+| Biến trạng thái đơn (bool, số) | `AtomicBool`, `AtomicU32`, `AtomicPtr`, v.v. |
+| Bộ đệm vòng tròn | `ringbuf` (lock‑free SPSC) |
+| Bảng băm với sharding | `dashmap` (đã shard sẵn) |
+
+**Quy tắc kiểm tra tự động:**
+- Mọi crate `Cargo.toml` phải có lint `disallowed_types = "deny"` và file `clippy.toml` liệt kê:
+  ```toml
+  disallowed-types = [
+      "std::sync::Mutex",
+      "std::sync::RwLock",
+      "parking_lot::Mutex",
+      "parking_lot::RwLock"
+  ]

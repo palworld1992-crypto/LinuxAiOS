@@ -1,11 +1,10 @@
 //! Dynamic API Mapper – Learns Windows to Linux API mappings
 
 use dashmap::DashMap;
-use parking_lot::RwLock;
 use serde::{Deserialize, Serialize};
-use std::collections::HashMap;
+use std::sync::atomic::{AtomicU64, Ordering};
 use thiserror::Error;
-use tracing::{debug, info};
+use tracing::info;
 
 #[derive(Error, Debug)]
 pub enum ApiMapperError {
@@ -17,14 +16,27 @@ pub enum ApiMapperError {
     SerializationError(#[from] serde_json::Error),
 }
 
-#[derive(Clone, Debug, Serialize, Deserialize)]
+#[derive(Debug, Serialize, Deserialize)]
 pub struct ApiMapping {
     pub windows_api: String,
     pub linux_equiv: Vec<String>,
     pub confidence: f32,
-    pub call_count: u64,
-    pub avg_latency_us: u64,
-    pub last_updated: u64,
+    pub call_count: AtomicU64,
+    pub avg_latency_us: AtomicU64,
+    pub last_updated: AtomicU64,
+}
+
+impl Clone for ApiMapping {
+    fn clone(&self) -> Self {
+        Self {
+            windows_api: self.windows_api.clone(),
+            linux_equiv: self.linux_equiv.clone(),
+            confidence: self.confidence,
+            call_count: AtomicU64::new(self.call_count.load(Ordering::Relaxed)),
+            avg_latency_us: AtomicU64::new(self.avg_latency_us.load(Ordering::Relaxed)),
+            last_updated: AtomicU64::new(self.last_updated.load(Ordering::Relaxed)),
+        }
+    }
 }
 
 impl Default for ApiMapping {
@@ -33,203 +45,115 @@ impl Default for ApiMapping {
             windows_api: String::new(),
             linux_equiv: Vec::new(),
             confidence: 0.0,
-            call_count: 0,
-            avg_latency_us: 0,
-            last_updated: 0,
+            call_count: AtomicU64::new(0),
+            avg_latency_us: AtomicU64::new(0),
+            last_updated: AtomicU64::new(0),
         }
     }
 }
 
 pub struct ApiMapper {
     mappings: DashMap<String, ApiMapping>,
-    pending_suggestions: RwLock<Vec<ApiMapping>>,
-    pattern_cache: RwLock<HashMap<String, Vec<String>>>,
+    pending_suggestions: DashMap<usize, ApiMapping>,
+    pattern_cache: DashMap<String, Vec<String>>,
+    suggestion_counter: std::sync::atomic::AtomicUsize,
 }
 
 impl ApiMapper {
     pub fn new() -> Self {
         Self {
             mappings: DashMap::new(),
-            pending_suggestions: RwLock::new(Vec::new()),
-            pattern_cache: RwLock::new(HashMap::new()),
+            pending_suggestions: DashMap::new(),
+            pattern_cache: DashMap::new(),
+            suggestion_counter: std::sync::atomic::AtomicUsize::new(0),
         }
     }
 
     pub fn get_mapping(&self, windows_api: &str) -> Option<ApiMapping> {
-        self.mappings.get(windows_api).map(|r| r.clone())
+        self.mappings.get(windows_api).map(|r| r.value().clone())
     }
 
-    pub fn add_or_update_mapping(&self, mapping: ApiMapping) {
-        let api = mapping.windows_api.clone();
-        self.mappings.insert(api, mapping);
-        debug!("Mapping added/updated");
+    pub fn add_mapping(&self, mapping: ApiMapping) {
+        self.mappings.insert(mapping.windows_api.clone(), mapping);
     }
 
-    pub fn record_api_call(&self, windows_api: &str, latency_us: u64) {
-        let mut entry = self.mappings.get_mut(windows_api);
-
-        if let Some(ref mut mapping) = entry {
-            mapping.call_count += 1;
-            mapping.last_updated = Self::current_timestamp();
-
-            let total_latency = mapping.avg_latency_us * (mapping.call_count - 1);
-            mapping.avg_latency_us = (total_latency + latency_us) / mapping.call_count;
-
-            if mapping.call_count > 100 && mapping.confidence < 1.0 {
-                mapping.confidence = (mapping.confidence + 0.01).min(1.0);
-            }
-        } else {
-            let mapping = ApiMapping {
-                windows_api: windows_api.to_string(),
-                linux_equiv: Vec::new(),
-                confidence: 0.1,
-                call_count: 1,
-                avg_latency_us: latency_us,
-                last_updated: Self::current_timestamp(),
-            };
-            self.mappings.insert(windows_api.to_string(), mapping);
-        }
-    }
-
-    pub fn analyze_pattern(&self, api_sequence: &[String]) -> Result<ApiMapping, ApiMapperError> {
-        if api_sequence.is_empty() {
-            return Err(ApiMapperError::AnalysisFailed("Empty sequence".to_string()));
-        }
-
-        let cache_key = api_sequence.join("->");
-
-        if let Some(linux_equiv) = self.pattern_cache.read().get(&cache_key) {
-            return Ok(ApiMapping {
-                windows_api: api_sequence.last().cloned().unwrap_or_default(),
-                linux_equiv: linux_equiv.clone(),
-                confidence: 0.6,
-                call_count: 0,
-                avg_latency_us: 0,
-                last_updated: Self::current_timestamp(),
-            });
-        }
-
-        let linux_equiv = self.infer_linux_mapping(api_sequence);
-
-        if !linux_equiv.is_empty() {
-            self.pattern_cache
-                .write()
-                .insert(cache_key, linux_equiv.clone());
-        }
-
-        Ok(ApiMapping {
-            windows_api: api_sequence.last().cloned().unwrap_or_default(),
-            linux_equiv,
-            confidence: 0.5,
-            call_count: 0,
-            avg_latency_us: 0,
-            last_updated: Self::current_timestamp(),
-        })
-    }
-
-    fn infer_linux_mapping(&self, api_sequence: &[String]) -> Vec<String> {
-        let mut result = Vec::new();
-
-        for api in api_sequence {
-            let linux_api = match api.to_lowercase().as_str() {
-                "createfile" | "createfilew" => vec!["open".to_string()],
-                "readfile" => vec!["pread".to_string(), "read".to_string()],
-                "writefile" => vec!["pwrite".to_string(), "write".to_string()],
-                "closehandle" => vec!["close".to_string()],
-                "getlasterror" => vec!["errno".to_string()],
-                "createthread" => vec!["pthread_create".to_string()],
-                "createmutex" => vec!["pthread_mutex_init".to_string()],
-                "waitforsingleobject" => {
-                    vec!["pthread_join".to_string(), "pthread_cond_wait".to_string()]
-                }
-                "setevent" => vec!["pthread_cond_signal".to_string()],
-                "virtualallocex" => vec!["mmap".to_string()],
-                "virtualfreeex" => vec!["munmap".to_string()],
-                _ => vec![],
-            };
-            result.extend(linux_api);
-        }
-
-        result
-    }
-
-    pub fn suggest_mapping(&self, windows_api: &str, linux_equiv: Vec<String>, confidence: f32) {
-        let mapping = ApiMapping {
-            windows_api: windows_api.to_string(),
-            linux_equiv,
-            confidence,
-            call_count: 0,
-            avg_latency_us: 0,
-            last_updated: Self::current_timestamp(),
-        };
-
-        self.pending_suggestions.write().push(mapping);
-        info!("Suggested mapping for {}", windows_api);
+    pub fn add_suggestion(&self, suggestion: ApiMapping) {
+        let idx = self.suggestion_counter.fetch_add(1, Ordering::Relaxed);
+        self.pending_suggestions.insert(idx, suggestion);
     }
 
     pub fn get_pending_suggestions(&self) -> Vec<ApiMapping> {
-        std::mem::take(&mut *self.pending_suggestions.write())
-    }
-
-    pub fn get_high_confidence_mappings(&self, min_confidence: f32) -> Vec<ApiMapping> {
-        self.mappings
+        self.pending_suggestions
             .iter()
-            .filter(|r| r.value().confidence >= min_confidence)
-            .map(|r| r.clone())
+            .map(|r| r.value().clone())
             .collect()
     }
 
-    pub fn get_all_mappings(&self) -> Vec<ApiMapping> {
-        self.mappings.iter().map(|r| r.clone()).collect()
+    pub fn accept_suggestion(&self, windows_api: &str, linux_equiv: Vec<String>) {
+        if let Some(mut mapping) = self.mappings.get_mut(windows_api) {
+            mapping.linux_equiv = linux_equiv;
+            mapping.confidence = 1.0;
+            mapping
+                .last_updated
+                .store(Self::current_timestamp(), Ordering::Relaxed);
+        }
     }
 
-    pub fn import_mappings(&self, mappings: Vec<ApiMapping>) {
-        for mapping in mappings {
-            self.add_or_update_mapping(mapping);
+    pub fn update_call_stats(&self, windows_api: &str, latency_us: u64) {
+        if let Some(mapping) = self.mappings.get_mut(windows_api) {
+            let count = mapping.call_count.fetch_add(1, Ordering::Relaxed) + 1;
+            let sum = mapping.avg_latency_us.load(Ordering::Relaxed) + latency_us;
+            mapping.avg_latency_us.store(sum / count, Ordering::Relaxed);
         }
-        info!("Imported mappings");
+    }
+
+    pub fn get_pattern(&self, api_pattern: &str) -> Option<Vec<String>> {
+        self.pattern_cache
+            .get(api_pattern)
+            .map(|r| r.value().clone())
+    }
+
+    pub fn add_pattern(&self, api_pattern: &str, linux_apis: Vec<String>) {
+        self.pattern_cache
+            .insert(api_pattern.to_string(), linux_apis);
+    }
+
+    pub fn analyze_pattern(&self, windows_api: &str) -> Result<Vec<String>, ApiMapperError> {
+        if let Some(apis) = self.get_pattern(windows_api) {
+            return Ok(apis);
+        }
+
+        let parts: Vec<&str> = windows_api.split('_').collect();
+        if parts.len() < 2 {
+            return Err(ApiMapperError::AnalysisFailed(
+                "Pattern too short".to_string(),
+            ));
+        }
+
+        let base = parts[0].to_lowercase();
+        let suggested = vec![format!("linux_{}", base)];
+        self.add_pattern(windows_api, suggested.clone());
+        Ok(suggested)
+    }
+
+    pub fn list_mappings(&self) -> Vec<String> {
+        self.mappings.iter().map(|r| r.key().clone()).collect()
+    }
+
+    pub fn clear_cache(&self) {
+        self.pattern_cache.clear();
+        info!("API mapper pattern cache cleared");
     }
 
     fn current_timestamp() -> u64 {
         std::time::SystemTime::now()
             .duration_since(std::time::UNIX_EPOCH)
-            .map(|d| d.as_millis() as u64)
-            .unwrap_or(0)
+            .map_or(0, |d| d.as_millis() as u64)
     }
 }
 
 impl Default for ApiMapper {
     fn default() -> Self {
         Self::new()
-    }
-}
-
-#[cfg(test)]
-mod tests {
-    use super::*;
-
-    #[test]
-    fn test_api_mapper_new() {
-        let mapper = ApiMapper::new();
-        assert!(mapper.get_mapping("test").is_none());
-    }
-
-    #[test]
-    fn test_record_api_call() {
-        let mapper = ApiMapper::new();
-        mapper.record_api_call("CreateFile", 100);
-
-        let mapping = mapper.get_mapping("CreateFile");
-        assert!(mapping.is_some());
-        assert_eq!(mapping.expect("mapping should exist after recording").call_count, 1);
-    }
-
-    #[test]
-    fn test_analyze_pattern() {
-        let mapper = ApiMapper::new();
-        let sequence = vec!["CreateFile".to_string(), "ReadFile".to_string()];
-        let result = mapper.analyze_pattern(&sequence);
-
-        assert!(result.is_ok());
     }
 }

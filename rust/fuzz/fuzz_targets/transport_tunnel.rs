@@ -19,14 +19,26 @@ fuzz_target!(|data: &[u8]| {
     }
 
     // Fuzz Intent Token validation
-    let signal = data.first().copied().unwrap_or(0);
-    let urgency = data.get(1).copied().unwrap_or(0);
+    let signal = match data.first() {
+        Some(&b) => b,
+        None => return,
+    };
+    let urgency = match data.get(1) {
+        Some(&b) => b,
+        None => return,
+    };
     let token = make_token(signal, urgency);
     let _ = validate_token(&token);
 
     // Fuzz token with edge cases
-    let edge_signal = data.first().map(|x| x.wrapping_mul(2)).unwrap_or(0);
-    let edge_urgency = data.get(1).map(|x| x.wrapping_add(100)).unwrap_or(0);
+    let edge_signal = match data.first() {
+        Some(&b) => b.wrapping_mul(2),
+        None => return,
+    };
+    let edge_urgency = match data.get(1) {
+        Some(&b) => b.wrapping_add(100),
+        None => return,
+    };
     let edge_token = make_token(edge_signal, edge_urgency);
     let _ = validate_token(&edge_token);
 });

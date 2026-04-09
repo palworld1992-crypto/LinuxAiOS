@@ -1,8 +1,9 @@
 //! KVM Fallback for Windows Module – determines hardware capabilities
 
-use parking_lot::RwLock;
 use std::path::Path;
-use sysinfo::{System, SystemExt, ProcessExt};
+use std::sync::atomic::{AtomicBool, Ordering};
+use std::sync::OnceLock;
+use sysinfo::{System, SystemExt};
 use thiserror::Error;
 use tracing::{info, warn};
 
@@ -34,21 +35,21 @@ pub struct HardwareCapabilities {
 }
 
 pub struct KvmFallback {
-    capabilities: RwLock<Option<HardwareCapabilities>>,
-    checked: RwLock<bool>,
+    capabilities: OnceLock<HardwareCapabilities>,
+    checked: AtomicBool,
 }
 
 impl KvmFallback {
     pub fn new() -> Self {
         Self {
-            capabilities: RwLock::new(None),
-            checked: RwLock::new(false),
+            capabilities: OnceLock::new(),
+            checked: AtomicBool::new(false),
         }
     }
 
     pub fn detect(&self) -> Result<HardwareCapabilities, KvmFallbackError> {
-        if let Some(cap) = self.capabilities.read().clone() {
-            return Ok(cap);
+        if let Some(cap) = self.capabilities.get() {
+            return Ok(cap.clone());
         }
 
         let has_kvm = self.check_kvm()?;
@@ -79,8 +80,8 @@ impl KvmFallback {
             recommended_mode,
         };
 
-        *self.capabilities.write() = Some(capabilities.clone());
-        *self.checked.write() = true;
+        let _ = self.capabilities.set(capabilities.clone());
+        self.checked.store(true, Ordering::Relaxed);
 
         info!("Detected hardware capabilities: {:?}", capabilities);
         Ok(capabilities)
@@ -103,103 +104,59 @@ impl KvmFallback {
         let iommu_path = Path::new("/sys/kernel/iommu_groups");
         let available = iommu_path.exists() && iommu_path.is_dir();
 
-        if !available {
-            let dmar_path = Path::new("/dev/dmar");
-            if dmar_path.exists() {
-                return Ok(true);
-            }
+        if available {
+            info!("IOMMU is available");
+        } else {
             warn!("IOMMU is not available");
-            return Err(KvmFallbackError::NoIommu);
         }
 
-        let groups = std::fs::read_dir(iommu_path)
-            .map_err(|e| KvmFallbackError::DetectionError(e.to_string()))?;
-
-        let count = groups.count();
-        if count > 0 {
-            info!("IOMMU available with {} groups", count);
-            return Ok(true);
-        }
-
-        warn!("IOMMU groups directory is empty");
-        Ok(false)
+        Ok(available)
     }
 
     fn detect_gpu(&self) -> Result<(bool, Option<String>, Option<String>), KvmFallbackError> {
-        let mut sys = System::new();
-        sys.refresh_processes();
-
-        for process in sys.processes().values() {
-            let name = process.name();
-            if name.contains("nvidia") || name.contains("amd") || name.contains("radeon") {
-                return Ok((true, None, Some(name.to_string())));
-            }
+        let lspci_path = Path::new("/usr/bin/lspci");
+        if !lspci_path.exists() {
+            return Ok((false, None, None));
         }
 
-        let pci_devices = self.scan_pci()?;
-        for (addr, name) in &pci_devices {
-            let lower = name.to_lowercase();
-            if lower.contains("vga")
-                || lower.contains("graphic")
-                || lower.contains("nvidia")
-                || lower.contains("amd")
-                || lower.contains("radeon")
-                || lower.contains("intel")
-            {
-                return Ok((true, Some(addr.clone()), Some(name.clone())));
+        let output = std::process::Command::new("lspci")
+            .arg("-nn")
+            .arg("-d::1002:")
+            .output()
+            .map_err(|e| KvmFallbackError::DetectionError(e.to_string()))?;
+
+        if output.status.success() {
+            let stdout = String::from_utf8_lossy(&output.stdout);
+            for line in stdout.lines() {
+                if line.contains("VGA") || line.contains("GPU") {
+                    let parts: Vec<&str> = line.splitn(2, " ").collect();
+                    if parts.len() >= 2 {
+                        let addr = parts[0].to_string();
+                        let driver = self.get_gpu_driver(&addr);
+                        return Ok((true, Some(addr), driver));
+                    }
+                }
             }
         }
 
         Ok((false, None, None))
     }
 
-    fn scan_pci(&self) -> Result<Vec<(String, String)>, KvmFallbackError> {
-        let sys_bus_pci = Path::new("/sys/bus/pci/devices");
-        if !sys_bus_pci.exists() {
-            return Ok(Vec::new());
+    fn get_gpu_driver(&self, pci_addr: &str) -> Option<String> {
+        let path = format!("/sys/bus/pci/drivers/{}/bind", pci_addr);
+        if Path::new(&path).exists() {
+            Some("unknown".to_string())
+        } else {
+            None
         }
-
-        let mut devices = Vec::new();
-
-        if let Ok(entries) = std::fs::read_dir(sys_bus_pci) {
-            for entry in entries.flatten() {
-                let path = entry.path();
-                let addr = path
-                    .file_name()
-                    .map(|n| n.to_string_lossy().to_string())
-                    .unwrap_or_default();
-
-                let vendor_path = path.join("vendor");
-                let device_path = path.join("device");
-
-                if vendor_path.exists() && device_path.exists() {
-                    let name = path
-                        .file_name()
-                        .map(|n| n.to_string_lossy().to_string())
-                        .unwrap_or_default();
-
-                    devices.push((addr, name));
-                }
-            }
-        }
-
-        Ok(devices)
     }
 
-    pub fn get_recommended_mode(&self) -> Result<VmMode, KvmFallbackError> {
-        let caps = self.detect()?;
-        Ok(caps.recommended_mode)
+    pub fn has_been_checked(&self) -> bool {
+        self.checked.load(Ordering::Relaxed)
     }
 
-    pub fn can_use_passthrough(&self) -> Result<bool, KvmFallbackError> {
-        let caps = self.detect()?;
-        Ok(matches!(caps.recommended_mode, VmMode::Passthrough))
-    }
-
-    pub fn get_gpu_info(&self) -> Option<(String, String)> {
-        let caps = self.capabilities.read();
-        caps.as_ref()
-            .and_then(|c| c.gpu_pci_addr.clone().zip(c.gpu_driver.clone()))
+    pub fn get_cached(&self) -> Option<HardwareCapabilities> {
+        self.capabilities.get().cloned()
     }
 }
 

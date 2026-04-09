@@ -1,7 +1,7 @@
 //! Tensor Audit – SQLite 3.51.1 backend.
 //! Strictly for historical audit logs as per AIOS design (Section 12.9).
 
-use super::pool::ModelSlot;
+use crate::tensor::types::ModelSlot;
 use rusqlite::{params, Connection, Result};
 use std::path::Path;
 use std::sync::mpsc::Receiver;

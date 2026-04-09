@@ -21,10 +21,9 @@ impl HostModelManager {
         }
     }
 
+    // TODO(Phase 7): Dilithium signature verification via spark::crypto
     pub fn verify_signature(&self, model_path: &PathBuf, _signature: &[u8]) -> Result<bool> {
-        // TODO: xác minh chữ ký Dilithium
-        info!("Verifying signature for model {:?}", model_path);
-        Ok(true)
+        unimplemented!("Phase 7: Dilithium signature verification via spark::crypto")
     }
 
     pub fn deploy_model(&self, model_name: &str, model_path: &PathBuf) -> Result<()> {

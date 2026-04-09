@@ -1,24 +1,25 @@
 //! Tensor Pool – shared memory region for AI models (INT4/GGUF)
 //! Uses memfd with seals, integrates with memory tiering (zstd compression).
 //! SQLite is used only for historical audit, metadata is managed in DashMap.
+//!
+//! Per spec Section 3.10: Supports DeviceLocation { Gpu, Cpu, Nvme } for layer placement,
+//! with promote_layer_to_gpu and demote_layer_to_ram APIs.
 
+use super::audit::start_audit_service;
+use crate::tensor::types::{DeviceLocation, ModelHandle, ModelSlot};
 use anyhow::{anyhow, Context, Result};
-use crossbeam_utils::CachePadded;
+use common::shm::SharedMemory;
 use dashmap::DashMap;
 use memmap2::MmapOptions;
-use serde::{Deserialize, Serialize};
-use sha2::{Digest, Sha256};
+use sha2::Digest;
 use std::fs::{self, File};
 use std::io::{Read, Write};
 use std::path::{Path, PathBuf};
-use std::sync::atomic::{AtomicUsize, Ordering};
+use std::sync::atomic::AtomicUsize;
 use std::sync::mpsc::{self, Sender};
-use std::thread;
 use thiserror::Error;
-use tracing::{error, info, warn};
+use tracing::{info, warn};
 use zstd::stream::{Decoder, Encoder};
-
-use common::shm::SharedMemory;
 
 /// Tensor pool error types.
 #[derive(Debug, Error)]
@@ -31,52 +32,8 @@ pub enum TensorPoolError {
     Io(#[from] std::io::Error),
     #[error("Internal error: {0}")]
     Internal(String),
-}
-
-/// Metadata cho một model đã load
-#[derive(Debug, Serialize, Deserialize)]
-pub struct ModelSlot {
-    pub name: String,
-    pub offset: usize,
-    pub size: usize,
-    pub version: String,
-    pub is_active: bool,
-    pub compressed_path: Option<PathBuf>,
-    pub hash: Vec<u8>,
-    /// Reference count padded to cache line size to prevent false sharing
-    #[serde(skip)]
-    pub ref_count: CachePadded<AtomicUsize>,
-}
-
-impl Clone for ModelSlot {
-    fn clone(&self) -> Self {
-        Self {
-            name: self.name.clone(),
-            offset: self.offset,
-            size: self.size,
-            version: self.version.clone(),
-            is_active: self.is_active,
-            compressed_path: self.compressed_path.clone(),
-            hash: self.hash.clone(),
-            ref_count: CachePadded::new(AtomicUsize::new(self.ref_count.load(Ordering::Acquire))),
-        }
-    }
-}
-
-impl ModelSlot {
-    pub fn inc_ref(&self) -> usize {
-        self.ref_count.fetch_add(1, Ordering::AcqRel) + 1
-    }
-
-    pub fn dec_ref(&self) -> usize {
-        self.ref_count
-            .fetch_sub(1, Ordering::AcqRel)
-            .saturating_sub(1)
-    }
-
-    pub fn get_ref_count(&self) -> usize {
-        self.ref_count.load(Ordering::Acquire)
-    }
+    #[error("Layer not found: model {model}, layer {layer}")]
+    LayerNotFound { model: String, layer: usize },
 }
 
 /// Trait giám sát sức khỏe cho các module
@@ -90,6 +47,7 @@ pub struct TensorPool {
     name: String,
     shm: SharedMemory,
     slots: DashMap<String, ModelSlot>,
+    model_handles: DashMap<String, ModelHandle>,
     next_offset: usize,
     _model_dir: PathBuf,
     cold_dir: PathBuf,
@@ -98,9 +56,10 @@ pub struct TensorPool {
 
 impl TensorPool {
     pub fn new(name: &str, size: usize) -> Result<Self> {
-        let base_dir = std::env::var("AIOS_BASE_DIR")
-            .map(PathBuf::from)
-            .unwrap_or_else(|_| PathBuf::from("/var/lib/aios"));
+        let base_dir = match std::env::var("AIOS_BASE_DIR") {
+            Ok(dir) => PathBuf::from(dir),
+            Err(_) => PathBuf::from("/var/lib/aios"),
+        };
 
         let model_dir = base_dir.join("models");
         let cold_dir = base_dir.join("cold_models");
@@ -122,42 +81,13 @@ impl TensorPool {
         let (tx, rx): (Sender<ModelSlot>, _) = mpsc::channel();
         let cold_dir_owned = cold_dir.to_path_buf();
 
-        thread::spawn(move || {
-            let db_path = cold_dir_owned.join("tensor_pool_audit.db");
-            let conn = match rusqlite::Connection::open(db_path) {
-                Ok(c) => c,
-                Err(e) => {
-                    error!("Critical: Failed to open audit DB: {}", e);
-                    return;
-                }
-            };
-
-            let _ = conn.execute(
-                "CREATE TABLE IF NOT EXISTS audit_log (
-                    name TEXT, version TEXT, event TEXT, timestamp DATETIME DEFAULT CURRENT_TIMESTAMP
-                )",
-                [],
-            );
-
-            for slot in rx {
-                let event = if slot.is_active {
-                    "ACTIVATE"
-                } else {
-                    "DEACTIVATE"
-                };
-                if let Err(e) = conn.execute(
-                    "INSERT INTO audit_log (name, version, event) VALUES (?1, ?2, ?3)",
-                    (&slot.name, &slot.version, event),
-                ) {
-                    error!("Audit log insert failed: {}", e);
-                }
-            }
-        });
+        start_audit_service(cold_dir_owned.join("tensor_pool_audit.db"), rx);
 
         Ok(Self {
             name: name.to_string(),
             shm,
             slots: DashMap::new(),
+            model_handles: DashMap::new(),
             next_offset: 0,
             _model_dir: model_dir.to_path_buf(),
             cold_dir: cold_dir.to_path_buf(),
@@ -167,6 +97,48 @@ impl TensorPool {
 
     pub fn name(&self) -> &str {
         &self.name
+    }
+
+    pub fn promote_layer_to_gpu(&self, name: &str, layer_index: usize) -> Result<()> {
+        let mut handle = self
+            .model_handles
+            .get_mut(name)
+            .ok_or_else(|| anyhow!("Model {} not found", name))?;
+        handle.promote_layer_to_gpu(layer_index)?;
+        info!("Promoted layer {} to GPU for model {}", layer_index, name);
+        Ok(())
+    }
+
+    pub fn demote_layer_to_ram(&self, name: &str, layer_index: usize) -> Result<()> {
+        let mut handle = self
+            .model_handles
+            .get_mut(name)
+            .ok_or_else(|| anyhow!("Model {} not found", name))?;
+        handle.demote_layer_to_ram(layer_index)?;
+        info!("Demoted layer {} to RAM for model {}", layer_index, name);
+        Ok(())
+    }
+
+    pub fn get_layer_location(&self, name: &str, layer_index: usize) -> Result<DeviceLocation> {
+        let handle = self
+            .model_handles
+            .get(name)
+            .ok_or_else(|| anyhow!("Model {} not found", name))?;
+        handle
+            .layer_locations
+            .get(layer_index)
+            .ok_or_else(|| anyhow!("Layer {} not found", layer_index))
+    }
+
+    pub fn get_model_handle(&self, name: &str) -> Option<ModelHandle> {
+        self.model_handles.get(name).map(|h| h.value().clone())
+    }
+
+    pub fn list_model_handles(&self) -> Vec<ModelHandle> {
+        self.model_handles
+            .iter()
+            .map(|item| item.value().clone())
+            .collect()
     }
 
     #[cfg(target_os = "linux")]
@@ -182,8 +154,21 @@ impl TensorPool {
         memfd.add_seal(memfd::FileSeal::SealShrink)?;
         memfd.add_seal(memfd::FileSeal::SealSeal)?;
 
+        // SAFETY: MmapOptions::map_mut is safe because the memfd file is valid,
+        // has the correct size set, and we have exclusive access via sealing.
         let mmap = unsafe { MmapOptions::new().len(size).map_mut(memfd.as_file())? };
         Ok(SharedMemory::from_mmap(mmap, size))
+    }
+
+    #[cfg(not(target_os = "linux"))]
+    fn create_sealed_shm(_name: &str, _size: usize) -> Result<SharedMemory> {
+        // Phase 4: Fallback for non-Linux platforms using temp file + mmap
+        // Note: Sealing not available, but can still use for development/testing
+        let temp_file = tempfile::tempfile()?;
+        temp_file.set_len(_size as u64)?;
+
+        let mmap = unsafe { MmapOptions::new().len(_size).map_mut(&temp_file)? };
+        Ok(SharedMemory::from_mmap(mmap, _size))
     }
 
     pub fn load_model_from_file(
@@ -209,14 +194,19 @@ impl TensorPool {
             .into());
         }
 
+        // SAFETY: The file is opened for reading, MmapOptions::map creates a read-only mapping.
+        // The file descriptor is valid for the duration of this call.
         let mmap = unsafe {
             MmapOptions::new()
                 .map(&file)
                 .with_context(|| format!("Failed to mmap model file: {:?}", path))?
         };
 
-        let hash = Sha256::digest(&mmap).to_vec();
+        let hash = sha2::Sha256::digest(&mmap).to_vec();
 
+        // SAFETY: self.shm.as_mut_ptr() points to a valid SHM region of size self.shm.len().
+        // offset + file_size has been validated to be within bounds above.
+        // mmap.as_ptr() points to valid data of file_size bytes.
         unsafe {
             std::ptr::copy_nonoverlapping(
                 mmap.as_ptr(),
@@ -238,10 +228,16 @@ impl TensorPool {
             is_active: true,
             compressed_path: None,
             hash,
-            ref_count: CachePadded::new(AtomicUsize::new(1)),
+            num_layers: 1,
+            ref_count: crossbeam_utils::CachePadded::new(AtomicUsize::new(1)),
         };
 
         self.slots.insert(name.to_string(), slot.clone());
+
+        let num_layers = 1;
+        let handle = ModelHandle::new(name.to_string(), version.to_string(), num_layers);
+        self.model_handles.insert(name.to_string(), handle);
+
         self.next_offset = offset + file_size;
         let _ = self.tx.send(slot.clone());
 
@@ -254,15 +250,27 @@ impl TensorPool {
 
     #[cfg(target_os = "linux")]
     fn seal_shm_region(&self, offset: usize, size: usize) -> Result<()> {
+        // SAFETY: self.shm.as_ptr() returns a valid pointer to the SHM region.
+        // offset is guaranteed to be within bounds by the caller.
         let shm_ptr = unsafe { self.shm.as_ptr().add(offset) };
         let shm_len = size;
 
+        // SAFETY: madvise is called with a valid pointer and length within the SHM region.
+        // MADV_DONTFORK is a valid madvise flag. Return value is checked.
         unsafe {
             if libc::madvise(shm_ptr as *mut libc::c_void, shm_len, libc::MADV_DONTFORK) != 0 {
                 warn!("MADV_DONTFORK failed for model region");
             }
         }
 
+        Ok(())
+    }
+
+    #[cfg(not(target_os = "linux"))]
+    fn seal_shm_region(&self, _offset: usize, _size: usize) -> Result<()> {
+        // Phase 4: No-op on non-Linux platforms (sealing not available)
+        // In production, Linux-only; for testing just warn
+        warn!("seal_shm_region called on non-Linux platform - no-op");
         Ok(())
     }
 
@@ -283,6 +291,9 @@ impl TensorPool {
             });
         }
 
+        // SAFETY: self.shm.as_mut_ptr() points to a valid SHM region.
+        // offset + size has been validated to be within bounds above.
+        // data.as_ptr() points to valid data of `size` bytes.
         unsafe {
             std::ptr::copy_nonoverlapping(data.as_ptr(), self.shm.as_mut_ptr().add(offset), size);
         }
@@ -291,6 +302,7 @@ impl TensorPool {
         self.seal_shm_region(offset, size)
             .map_err(|e| TensorPoolError::Internal(e.to_string()))?;
 
+        let num_layers = 1;
         let slot = ModelSlot {
             name: name.to_string(),
             offset,
@@ -299,10 +311,15 @@ impl TensorPool {
             is_active: true,
             compressed_path: None,
             hash,
-            ref_count: CachePadded::new(AtomicUsize::new(1)),
+            num_layers,
+            ref_count: crossbeam_utils::CachePadded::new(AtomicUsize::new(1)),
         };
 
         self.slots.insert(name.to_string(), slot.clone());
+
+        let handle = ModelHandle::new(name.to_string(), version.to_string(), num_layers);
+        self.model_handles.insert(name.to_string(), handle);
+
         self.next_offset = offset + size;
         let _ = self.tx.send(slot.clone());
 
@@ -318,6 +335,9 @@ impl TensorPool {
 
         slot.inc_ref();
 
+        // SAFETY: self.shm.as_ptr() points to a valid SHM region.
+        // slot.offset and slot.size are validated when the slot was created.
+        // The returned slice is valid for the lifetime of the slot reference.
         unsafe {
             Some(std::slice::from_raw_parts(
                 self.shm.as_ptr().add(slot.offset),
@@ -333,7 +353,10 @@ impl TensorPool {
     }
 
     pub fn contains_model(&self, name: &str) -> bool {
-        self.slots.get(name).map(|s| s.is_active).unwrap_or(false)
+        match self.slots.get(name) {
+            Some(s) => s.is_active,
+            None => false,
+        }
     }
 
     pub fn list_models(&self) -> Vec<ModelSlot> {
@@ -355,10 +378,10 @@ impl TensorPool {
             .ok_or_else(|| anyhow!("No compressed copy for {}", name))?;
 
         let mut decoder = Decoder::new(File::open(compressed_path)?)?;
-        let mut decompressed = Vec::new();
+        let mut decompressed = vec![];
         decoder.read_to_end(&mut decompressed)?;
 
-        let actual_hash = Sha256::digest(&decompressed).to_vec();
+        let actual_hash = sha2::Sha256::digest(&decompressed).to_vec();
         if actual_hash != slot.hash {
             return Err(anyhow!(
                 "Integrity check failed for {}: hash mismatch",
@@ -366,6 +389,9 @@ impl TensorPool {
             ));
         }
 
+        // SAFETY: decompressed is a valid Vec<u8> with known length.
+        // self.shm.as_mut_ptr() points to a valid SHM region.
+        // slot.offset + slot.size has been validated when the slot was created.
         unsafe {
             std::ptr::copy_nonoverlapping(
                 decompressed.as_ptr(),
@@ -379,7 +405,7 @@ impl TensorPool {
 
         slot.is_active = true;
         slot.compressed_path = None;
-        slot.ref_count = CachePadded::new(AtomicUsize::new(1));
+        slot.ref_count = crossbeam_utils::CachePadded::new(AtomicUsize::new(1));
         let _ = self.tx.send(slot.clone());
 
         info!("Model {} re-activated from cold storage", name);
@@ -395,6 +421,9 @@ impl TensorPool {
             return Ok(());
         }
 
+        // SAFETY: self.shm.as_ptr() points to a valid SHM region.
+        // slot.offset and slot.size are validated when the slot was created.
+        // The returned slice is valid for the duration of this function.
         let data =
             unsafe { std::slice::from_raw_parts(self.shm.as_ptr().add(slot.offset), slot.size) };
         let compressed_path = self.cold_dir.join(format!("{}_{}.zst", name, slot.version));
@@ -404,22 +433,18 @@ impl TensorPool {
         encoder.finish()?;
 
         #[cfg(target_os = "linux")]
-        unsafe {
-            if libc::madvise(
-                self.shm.as_mut_ptr().add(slot.offset) as *mut _,
-                slot.size,
-                libc::MADV_COLD,
-            ) != 0
-            {
-                warn!("Madvise MADV_COLD failed for model {}", name);
-            }
-            if libc::madvise(
-                self.shm.as_mut_ptr().add(slot.offset) as *mut _,
-                slot.size,
-                libc::MADV_DONTFORK,
-            ) != 0
-            {
-                warn!("Madvise MADV_DONTFORK failed for model {}", name);
+        {
+            // SAFETY: self.shm.as_mut_ptr() points to a valid SHM region.
+            // slot.offset and slot.size are validated when the slot was created.
+            // MADV_COLD and MADV_DONTFORK are valid madvise flags.
+            unsafe {
+                let ptr = self.shm.as_mut_ptr().add(slot.offset) as *mut libc::c_void;
+                if libc::madvise(ptr, slot.size, libc::MADV_COLD) != 0 {
+                    warn!("Madvise MADV_COLD failed for model {}", name);
+                }
+                if libc::madvise(ptr, slot.size, libc::MADV_DONTFORK) != 0 {
+                    warn!("Madvise MADV_DONTFORK failed for model {}", name);
+                }
             }
         }
 

@@ -3,3 +3,6 @@
 pub mod windows_dxvk_bindings;
 pub mod libvirt_bindings;
 pub mod wine_bindings;
+
+#[cfg(feature = "use_libvirt")]
+pub mod libvirt;

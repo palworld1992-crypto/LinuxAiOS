@@ -2,6 +2,7 @@
 
 use serde::Deserialize;
 use std::fs;
+use tracing::warn;
 
 #[derive(Debug, Deserialize)]
 struct PolicyConfig {
@@ -25,10 +26,19 @@ impl HostPolicyEngine {
             cpu_limit_percent: 80,
             memory_limit_mb: 4096,
         };
-        let config = fs::read_to_string("/etc/aios/host_policy.json")
-            .ok()
-            .and_then(|s| serde_json::from_str(&s).ok())
-            .unwrap_or(default);
+        let config = match fs::read_to_string("/etc/aios/host_policy.json") {
+            Ok(content) => match serde_json::from_str(&content) {
+                Ok(config) => config,
+                Err(e) => {
+                    warn!(error = ?e, "Failed to parse host policy JSON, using defaults");
+                    default
+                }
+            },
+            Err(e) => {
+                warn!(error = ?e, "Failed to read host policy file, using defaults");
+                default
+            }
+        };
         Self { config }
     }
 

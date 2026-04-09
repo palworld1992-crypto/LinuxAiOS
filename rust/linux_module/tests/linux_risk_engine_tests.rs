@@ -1,35 +1,38 @@
 use common::health_tunnel::{HealthRecord, HealthStatus, HealthTunnel};
 use common::utils::current_timestamp_ms;
+use dashmap::DashMap;
 use linux_module::health_tunnel_impl::HealthTunnelImpl;
 use linux_module::supervisor::linux_risk_engine::{
     HealthMasterClient, RiskAssessmentEngine, RiskLevel,
 };
 use linux_module::supervisor::Proposal;
-use parking_lot::RwLock;
 use std::collections::HashMap;
 use std::sync::Arc;
 use tokio::runtime::Runtime;
 
-fn with_temp_base<F, T>(f: F) -> T
+fn with_temp_base<F, T>(f: F) -> Result<T, Box<dyn std::error::Error>>
 where
-    F: FnOnce() -> T,
+    F: FnOnce() -> Result<T, Box<dyn std::error::Error>>,
 {
-    let temp_dir = tempfile::tempdir().unwrap();
-    let base_path = temp_dir.path().to_str().unwrap();
+    let temp_dir = tempfile::tempdir()?;
+    let base_path = temp_dir.path().to_str().ok_or("Invalid path")?;
     std::env::set_var("AIOS_BASE_DIR", base_path);
     let result = f();
     std::env::remove_var("AIOS_BASE_DIR");
     result
 }
 
+type RiskSignature = Vec<u8>;
+type RiskRecord = (RiskLevel, RiskSignature);
+
 struct MockHealthMasterClient {
-    published_risk: Arc<RwLock<Option<(RiskLevel, Vec<u8>)>>>,
+    published_risk: Arc<DashMap<(), Option<RiskRecord>>>,
 }
 
 impl MockHealthMasterClient {
     fn new() -> Self {
         Self {
-            published_risk: Arc::new(RwLock::new(None)),
+            published_risk: Arc::new(DashMap::with_capacity(1)),
         }
     }
 }
@@ -37,7 +40,7 @@ impl MockHealthMasterClient {
 #[async_trait::async_trait]
 impl HealthMasterClient for MockHealthMasterClient {
     async fn publish_risk_level(&self, level: RiskLevel, signature: Vec<u8>) -> anyhow::Result<()> {
-        *self.published_risk.write() = Some((level, signature));
+        self.published_risk.insert((), Some((level, signature)));
         Ok(())
     }
 
@@ -50,12 +53,11 @@ impl HealthMasterClient for MockHealthMasterClient {
 }
 
 #[test]
-fn test_risk_engine_evaluate() {
+fn test_risk_engine_evaluate() -> Result<(), Box<dyn std::error::Error>> {
     with_temp_base(|| {
         let health_tunnel = Arc::new(HealthTunnelImpl::new("test_module"));
         let engine = RiskAssessmentEngine::new(health_tunnel.clone());
 
-        // Ghi một số health record cho proposer và các module khác
         let record = HealthRecord {
             module_id: "linux".to_string(),
             timestamp: current_timestamp_ms(),
@@ -63,7 +65,7 @@ fn test_risk_engine_evaluate() {
             potential: 1.0,
             details: vec![],
         };
-        health_tunnel.record_health(record).unwrap();
+        health_tunnel.record_health(record)?;
 
         let record2 = HealthRecord {
             module_id: "windows".to_string(),
@@ -72,26 +74,24 @@ fn test_risk_engine_evaluate() {
             potential: 0.5,
             details: vec![],
         };
-        health_tunnel.record_health(record2).unwrap();
+        health_tunnel.record_health(record2)?;
 
-        // Cập nhật reputation cho proposer
         engine.update_reputation("linux", 0.8);
 
         let proposal = Proposal { id: 1 };
         let score = engine.evaluate(&proposal, "linux");
-        assert!(score >= 0.0 && score <= 1.0);
-        // Score phải nhỏ hơn ngưỡng vì health healthy + reputation cao
+        assert!((0.0..=1.0).contains(&score));
         assert!(score < 0.5);
-    });
+        Ok(())
+    })
 }
 
 #[test]
-fn test_risk_engine_high_risk() {
+fn test_risk_engine_high_risk() -> Result<(), Box<dyn std::error::Error>> {
     with_temp_base(|| {
         let health_tunnel = Arc::new(HealthTunnelImpl::new("test_module"));
         let engine = RiskAssessmentEngine::new(health_tunnel.clone());
 
-        // Proposer có health failed
         let record = HealthRecord {
             module_id: "linux".to_string(),
             timestamp: current_timestamp_ms(),
@@ -99,12 +99,10 @@ fn test_risk_engine_high_risk() {
             potential: 0.0,
             details: vec![],
         };
-        health_tunnel.record_health(record).unwrap();
+        health_tunnel.record_health(record)?;
 
-        // Reputation thấp
         engine.update_reputation("linux", 0.2);
 
-        // Các module khác đều degraded
         for module in [
             "windows",
             "android",
@@ -120,7 +118,7 @@ fn test_risk_engine_high_risk() {
                 potential: 0.5,
                 details: vec![],
             };
-            health_tunnel.record_health(rec).unwrap();
+            health_tunnel.record_health(rec)?;
         }
 
         let proposal = Proposal { id: 1 };
@@ -128,18 +126,18 @@ fn test_risk_engine_high_risk() {
         assert!(score > 0.7);
         let level = engine.compute_risk_level(score);
         assert_eq!(level, RiskLevel::Red);
-    });
+        Ok(())
+    })
 }
 
 #[test]
-fn test_publish_current_risk() {
+fn test_publish_current_risk() -> Result<(), Box<dyn std::error::Error>> {
     with_temp_base(|| {
-        let rt = Runtime::new().unwrap();
+        let rt = Runtime::new()?;
         rt.block_on(async {
             let health_tunnel = Arc::new(HealthTunnelImpl::new("test_module"));
             let engine = RiskAssessmentEngine::new(health_tunnel.clone());
 
-            // Ghi health cho tất cả module (mặc định Unknown)
             for module in [
                 "linux",
                 "windows",
@@ -156,32 +154,30 @@ fn test_publish_current_risk() {
                     potential: 0.5,
                     details: vec![],
                 };
-                health_tunnel.record_health(rec).unwrap();
+                health_tunnel.record_health(rec)?;
             }
 
             let mock_client = Arc::new(MockHealthMasterClient::new());
             engine.set_health_master_client(mock_client.clone());
 
-            engine.publish_current_risk().await.unwrap();
+            engine.publish_current_risk().await?;
 
-            let published = mock_client.published_risk.read();
+            let published = mock_client.published_risk.get(&());
             assert!(published.is_some());
-            let (level, _) = published.as_ref().unwrap();
-            // Với tất cả Unknown, avg_score = 0.5 => risk level Yellow
+            let value = published.ok_or("No risk published")?;
+            let (level, _) = value.value().as_ref().ok_or("No risk published")?;
             assert_eq!(*level, RiskLevel::Yellow);
-        });
-    });
+            Ok::<_, Box<dyn std::error::Error>>(())
+        })
+    })
 }
 
 #[test]
-fn test_current_risk_cache() {
+fn test_current_risk_cache() -> Result<(), Box<dyn std::error::Error>> {
     with_temp_base(|| {
         let health_tunnel = Arc::new(HealthTunnelImpl::new("test_module"));
         let engine = RiskAssessmentEngine::new(health_tunnel);
         assert!(engine.current_risk().is_none());
-
-        // Sau khi publish, cache được cập nhật
-        // Thực tế cần chạy publish_current_risk, nhưng trong test ta có thể set mock
-        // Ở đây chỉ test cache ban đầu
-    });
+        Ok(())
+    })
 }

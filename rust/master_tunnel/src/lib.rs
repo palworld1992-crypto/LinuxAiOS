@@ -60,7 +60,7 @@ impl MasterTunnel {
         let raft_service =
             RaftServiceServer::new(crate::raft_service::RaftServiceImpl::new(raft_instance));
 
-        println!("🚀 Master Server (Node) listening on {}", addr);
+        tracing::info!("🚀 Master Server (Node) listening on {}", addr);
         Server::builder()
             .add_service(master_service)
             .add_service(raft_service)

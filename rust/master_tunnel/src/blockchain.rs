@@ -14,7 +14,7 @@ pub struct Transaction {
     pub signature: Vec<u8>, // Chữ ký Dilithium của người đề xuất
 }
 
-#[derive(Debug, Clone, Serialize, Deserialize)]
+#[derive(Debug, Clone, Serialize, Deserialize, PartialEq)]
 pub enum TransactionType {
     RegisterSupervisor,
     UpdateSupervisorKey,
@@ -75,7 +75,7 @@ impl Block {
 
         // Xây dựng cây Merkle ngược lên trên
         while hashes.len() > 1 {
-            let mut new_hashes = Vec::new();
+            let mut new_hashes = vec![];
 
             // Nếu số lượng hash lẻ, nhân đôi hash cuối cùng để tạo cặp
             if !hashes.len().is_multiple_of(2) {
@@ -137,6 +137,15 @@ pub fn genesis_block() -> Block {
 
     // Tính toán hash chuẩn cho Genesis block thay vì để trống
     // Nếu serialization hiếm khi lỗi, fallback về hash mặc định để tránh panic runtime.
-    block.hash = block.compute_hash().unwrap_or_else(|_| vec![0u8; 32]);
+    block.hash = match block.compute_hash() {
+        Ok(hash) => hash,
+        Err(e) => {
+            tracing::warn!(
+                "Failed to compute genesis block hash: {:?}, using default zero hash",
+                e
+            );
+            vec![0u8; 32]
+        }
+    };
     block
 }

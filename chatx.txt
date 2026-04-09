@@ -1,0 +1,179 @@
+
+1. Sửa các vi phạm mục 0d (nghiêm cấm tạo lệnh giả/mock trái phép)
+Thay thế tất cả các hàm trả về giá trị giả (mock) bằng unimplemented! kèm // TODO(Phase 6): ... comment. Cụ thể các file và hàm cần sửa:
+
+src/ai/recommender.rs:
+
+get_confidence() → thay bằng unimplemented!("Phase 6: compute confidence from model validation metrics")
+
+recommend() và evaluate_safety() đã có unimplemented! nhưng cần thêm TODO comment.
+
+src/ai/sih_rl_policy.rs:
+
+get_policy_action() → thay bằng unimplemented!("Phase 6: RL policy inference")
+
+evaluate() đã có unimplemented! nhưng cần thêm TODO.
+
+src/ai/sih_assistant.rs:
+
+initialize() → thay bằng unimplemented!("Phase 6: load models into Tensor Pool")
+
+src/api/auth.rs:
+
+verify_token() → không được trả về valid: true mặc định. Thay bằng unimplemented!("Phase 6: verify token via Master Tunnel")
+
+src/api/gateway.rs:
+
+start() → thay bằng unimplemented!("Phase 6: start gRPC/ZeroMQ server")
+
+src/dkss/content_validator.rs:
+
+validate_config() → thay bằng unimplemented!("Phase 6: sandbox validation")
+
+check_toxicity() hiện đang dùng logic đơn giản, cần thay bằng unimplemented! nếu chưa có model thật.
+
+src/dkss/trust_scoring.rs:
+
+calculate_score() → thay bằng unimplemented!("Phase 6: ML-based trust scoring")
+
+src/hardware/collector.rs:
+
+collect() → thay vì gán cpu_usage = 0.0, hãy đọc từ sysinfo thực tế. Nếu chưa implement được, dùng unimplemented! với TODO.
+
+src/main/sih_local_failover.rs và src/main_component/sih_local_failover.rs:
+
+handle_supervisor_failure() và accept_new_supervisor() → thay bằng unimplemented!("Phase 6: local failover logic")
+
+src/supervisor/sih_supervisor.rs:
+
+handle_proposal() → thay bằng unimplemented!("Phase 6: process proposal via consensus client")
+
+src/knowledge/vector_store.rs:
+
+Các hàm add_vector, search, remove_vector, save, load đã có unimplemented! nhưng thiếu TODO comment → bổ sung // TODO(Phase 6): implement FAISS/HNSW.
+
+2. Bổ sung implement đầy đủ theo thiết kế Phase 6
+Các thành phần sau cần được implement đúng chức năng (không còn placeholder):
+
+2.1. Hardware Collector (src/hardware/collector.rs và sih_hardware_collector.rs)
+Dùng sysinfo đọc CPU, RAM, GPU, nhiệt độ thực tế (không phải 0.0).
+
+Ghi metrics vào ring buffer (SPSC) kích thước 4096.
+
+Định kỳ (mỗi 10s) tính root hash của batch metrics và gửi đến Database Tunnel (Merkle tree).
+
+Cung cấp API để SIH Supervisor đọc metrics từ ring buffer.
+
+2.2. Knowledge Base (src/knowledge/base.rs, vector_store.rs, decision_history.rs)
+Vector store: Dùng faiss hoặc hnsw crate để tạo index. Hỗ trợ thêm/xóa/search vector.
+
+Metadata cache: Dùng DashMap để lưu các entry phổ biến, background thread ghi vào SQLite.
+
+Decision history: Dùng DashMap cho N proposal gần nhất, SQLite cho full history. Thêm API get_recent_by_type.
+
+Đảm bảo mọi truy vấn đều qua cache trước, chỉ ghi SQLite không chặn luồng chính.
+
+2.3. Recommender AI (src/ai/recommender.rs)
+Load model ONNX/GGUF từ Tensor Pool (gọi tensor_pool::map_model).
+
+Implement recommend() dùng candle inference, trả về danh sách Recommendation.
+
+Implement evaluate_safety() dùng model phân tích rủi ro, trả về SafetyScore với risk level.
+
+2.4. Embedding Engine (src/ai/embedding.rs)
+Load transformer model (DistilBERT) từ Tensor Pool.
+
+Implement encode() và encode_batch() dùng candle inference.
+
+Kết quả embedding được đẩy vào ring buffer để các consumer (knowledge base, DKSS) đọc nhanh.
+
+2.5. DKSS (Distributed Knowledge Synthesis System)
+Source fetcher (src/dkss/source_fetcher.rs): Hỗ trợ fetch từ Web (HTTP), Blockchain (RPC), Config (file), Filesystem. Thêm cơ chế active discovery dựa trên sự kiện từ Health Tunnel.
+
+Trust scoring (src/dkss/trust_scoring.rs): Dùng NLP model (candle) để phân tích nội dung, kết hợp với lịch sử và chữ ký số. Lưu trust score vào DashMap, đồng bộ với SQLite.
+
+Content validator (src/dkss/content_validator.rs):
+
+Dùng MinHash/LSH để phát hiện trùng lặp.
+
+Dùng model toxicity (candle) để phát hiện nội dung độc hại.
+
+Xác thực cấu hình trong sandbox (seccomp) trước khi chấp nhận.
+
+Privacy filter (src/dkss/privacy_filter.rs): Đã có regex cơ bản, cần mở rộng thêm pattern cho JWT, token, private key.
+
+Knowledge ingestion (src/dkss/knowledge_ingestion.rs): Điều phối pipeline, ghi vào knowledge base và Database Tunnel. Thêm cơ chế retry và rollback khi thất bại.
+
+2.6. API Gateway (src/api/gateway.rs, auth.rs, state_cache.rs)
+gRPC server (tonic) cung cấp các service: GetHardwareMetrics, QueryKnowledge, EvaluateProposal, SubmitFeedback.
+
+WebSocket (tokio_tungstenite) cho real-time notification (proposal, failover).
+
+Auth: Xác thực token JWT từ Master Tunnel (gọi FFI hoặc gRPC), không tự cho phép mọi token.
+
+State cache: Dùng DashMap, cập nhật định kỳ từ Health Tunnel (5s/lần). Hỗ trợ clear expired.
+
+2.7. SIH Assistant (src/ai/sih_assistant.rs, sih_lnn_predictor.rs, sih_rl_policy.rs)
+LNN predictor: Dùng candle với weights nhúng từ const array (huấn luyện offline). Dự đoán tần suất truy vấn, pre‑fetch embedding.
+
+RL policy: Load policy network ONNX/GGUF từ Tensor Pool, inference đưa ra action: AdjustTrustThreshold, PrioritizeSource, RejectSource. Kết quả gửi đến SIH Supervisor.
+
+2.8. Support Mechanism (src/main/sih_support.rs, sih_support_context.rs)
+Implement SupervisorSupport cho SihMain.
+
+Các tác vụ được ủy quyền: Embedding (tạo embedding cho tri thức mới), DecisionHistory (ghi nhận proposal), HardwareCollection (thu thập metrics).
+
+Khi nhận take_over_operations, bật các tác vụ tương ứng với SupportContext.
+
+Khi nhận delegate_back_operations, tắt và chuyển về Idle.
+
+2.9. Local Failover & Degraded Mode (src/main/sih_local_failover.rs, sih_degraded_mode.rs)
+handle_supervisor_failure(): kích hoạt degraded mode (chỉ phục vụ GET APIs, không cập nhật model, không thay đổi trust scoring).
+
+accept_new_supervisor(): nhận PID và khóa mới từ Master Tunnel, bàn giao trạng thái (cache, pipeline đang chạy).
+
+Degraded mode: kiểm tra flag trong middleware, trả về 503 cho các POST endpoint.
+
+2.10. Supervisor (src/supervisor/sih_supervisor.rs, sih_consensus_client.rs, sih_policy_engine.rs)
+SihSupervisor phải khởi tạo tất cả các thành phần trên, đăng ký kênh SCC.
+
+handle_proposal(): nhận proposal từ Master Tunnel, gọi recommender AI để đánh giá, gửi phản hồi.
+
+SihConsensusClient: gửi proposal (ký Dilithium) đến Master Tunnel khi cần (ví dụ đề xuất nguồn tri thức mới).
+
+SihPolicyEngine: đọc policy từ Master Tunnel (trust threshold, max entries, v.v.) và áp dụng.
+
+3. Quy tắc code bắt buộc
+Cấm unwrap(), expect(), #[allow] trong production code. Dùng ? hoặc .ok_or().
+
+Cấm Mutex<HashMap> và RwLock<HashMap>; thay bằng DashMap, evmap, ringbuf.
+
+Cấm println!; dùng tracing::info!, tracing::debug!, v.v.
+
+Mọi unimplemented! phải có // TODO(Phase 6): ... giải thích lý do và kế hoạch.
+
+Test functions phải trả về Result<(), anyhow::Error> và dùng ?. Cấm unwrap() trong test (trừ comment đặc biệt).
+
+Giới hạn dòng: mỗi file ≤ 400 dòng (Rust). Nếu quá, tách thành nhiều file.
+
+FFI: Nếu gọi Zig/Ada, phải bọc catch_unwind và kiểm tra lỗi.
+
+4. Các file cần tạo mới (nếu chưa có)
+src/supervision/sih_support_monitor.rs – giám sát các main đang hỗ trợ, gửi force_stop_support.
+
+src/ai/sih_model_manager.rs – quản lý model trong Tensor Pool (đã có nhưng cần hoàn thiện).
+
+src/database/sih_database_tunnel_integration.rs – ghi root hash vào Database Tunnel.
+
+tests/tier1/sih_*_mock.rs – mock cho tầng 1 test.
+
+5. Kiểm tra và xác nhận
+Sau khi sửa, hãy đảm bảo:
+
+Không còn bất kỳ giá trị giả nào (trừ unimplemented! có TODO).
+
+cargo check và cargo test --features mock chạy thành công (các test hiện tại pass).
+
+Các thành phần chính (hardware collector, knowledge base, DKSS, API gateway) có ít nhất implement cơ bản (không chỉ stub).
+
+Mọi vi phạm mục 0d đã được xóa.

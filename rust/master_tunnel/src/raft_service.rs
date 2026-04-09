@@ -99,10 +99,17 @@ impl RaftService for RaftServiceImpl {
             }
             // PartialSuccess: Tuple Variant chứa Option<LogId>
             openraft::raft::AppendEntriesResponse::PartialSuccess(log_id) => {
+                let last_log_index = match log_id {
+                    Some(l) => l.index,
+                    None => {
+                        tracing::debug!("PartialSuccess received with None log_id for term {}", req.term);
+                        0
+                    }
+                };
                 Ok(Response::new(ProtoAppendEntriesResponse {
                     term: req.term,
                     success: true,
-                    last_log_index: log_id.map(|l| l.index).unwrap_or(0),
+                    last_log_index,
                 }))
             }
             // HigherVote: Tuple Variant chứa cấu trúc Vote

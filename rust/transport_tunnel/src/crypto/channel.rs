@@ -69,16 +69,18 @@ impl ChannelCrypto {
 #[cfg(test)]
 mod tests {
     use super::*;
+    use anyhow::Result;
 
     #[test]
-    fn test_encrypt_decrypt() {
+    fn test_encrypt_decrypt() -> Result<()> {
         let key = [0u8; 32];
         let crypto = ChannelCrypto::new(key);
 
         let plaintext = b"Hello, World!";
-        let encrypted = crypto.encrypt(plaintext).unwrap();
-        let decrypted = crypto.decrypt(&encrypted).unwrap();
+        let encrypted = crypto.encrypt(plaintext)?;
+        let decrypted = crypto.decrypt(&encrypted)?;
 
         assert_eq!(plaintext.as_slice(), decrypted.as_slice());
+        Ok(())
     }
 }

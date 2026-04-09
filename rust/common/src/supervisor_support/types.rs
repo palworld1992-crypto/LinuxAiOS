@@ -17,6 +17,10 @@ impl SupportContext {
     pub const EMBEDDING: Self = Self(1 << 8);
     pub const DECISION_HISTORY: Self = Self(1 << 9);
     pub const HARDWARE_COLLECTOR: Self = Self(1 << 10);
+    pub const MICRO_SCHEDULER: Self = Self(1 << 11);
+    pub const WATCHDOG: Self = Self(1 << 12);
+    pub const SNN_PROCESSOR: Self = Self(1 << 13);
+    pub const RL_POLICY: Self = Self(1 << 14);
 
     pub fn contains(self, other: Self) -> bool {
         (self.0 & other.0) != 0
@@ -27,8 +31,7 @@ impl SupportContext {
     }
 }
 
-#[derive(Debug, Clone, Copy, PartialEq, Eq, Serialize, Deserialize)]
-#[derive(Default)]
+#[derive(Debug, Clone, Copy, PartialEq, Eq, Serialize, Deserialize, Default)]
 pub enum SupportStatus {
     #[default]
     Idle,
@@ -53,7 +56,6 @@ impl Default for SupportContext {
         Self::NONE
     }
 }
-
 
 #[cfg(test)]
 mod tests {

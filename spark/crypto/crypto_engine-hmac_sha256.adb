@@ -1,4 +1,5 @@
-pragma Style_Checks (Off);
+--  SPARK_Mode (Off): Wrapper calls external OpenSSL EVP_MAC API for HMAC-SHA256
+--  which involves pointer manipulation and C library calls that cannot be verified by SPARK.
 pragma SPARK_Mode (Off);
 
 with Interfaces.C; use Interfaces.C;

@@ -14,8 +14,9 @@ impl BrowserSupervisor {
     }
 
     pub async fn handle_heartbeat(&self) -> Result<()> {
-        // Gửi heartbeat qua SCC
-        Ok(())
+        // TODO(Phase 4): Implement real heartbeat via SCC/Transport Tunnel
+        // Must send signed heartbeat to Health Master Tunnel
+        unimplemented!("TODO(Phase 4): Implement real heartbeat via SCC/Transport Tunnel to Health Master Tunnel");
     }
 
     pub async fn discard_tab(&self, tab_id: u64) -> Result<()> {
@@ -24,9 +25,14 @@ impl BrowserSupervisor {
             .map_err(|e| anyhow!("Failed to create CString: {}", e))?;
         // SAFETY: Hàm browser_receive_command là FFI từ C++, chỉ nhận con trỏ CString hợp lệ.
         // command.as_ptr() trỏ đến bộ nhớ tĩnh hợp lệ, không bị giải phóng trong quá trình gọi.
-        unsafe {
-            browser_receive_command(command.as_ptr(), tab_id);
-        }
+        std::panic::catch_unwind(std::panic::AssertUnwindSafe(|| {
+            // SAFETY: `command` is a valid CString whose pointer remains valid for the duration
+            // of this call. `browser_receive_command` is an FFI function from C++ that expects
+            // a valid C string pointer and a u64 parameter.
+            unsafe {
+                browser_receive_command(command.as_ptr(), tab_id);
+            }
+        })).map_err(|e| anyhow!("FFI panic in browser_receive_command: {:?}", e))?;
         Ok(())
     }
 }

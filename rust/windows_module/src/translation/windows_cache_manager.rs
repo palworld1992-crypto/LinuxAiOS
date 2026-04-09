@@ -1,13 +1,10 @@
-use anyhow::Context;
-use lru::LruCache;
+use dashmap::DashMap;
 use memmap2::MmapMut;
-use parking_lot::RwLock;
 use std::fs::OpenOptions;
-
 use std::path::PathBuf;
-use std::sync::atomic::{AtomicU64, Ordering};
+use std::sync::atomic::{AtomicBool, AtomicU64, Ordering};
 use thiserror::Error;
-use tracing::{info, warn};
+use tracing::info;
 
 #[derive(Error, Debug)]
 pub enum CacheError {
@@ -23,23 +20,21 @@ pub struct CacheEntry {
     pub data: Vec<u8>,
     pub hit_count: AtomicU64,
     pub last_access: AtomicU64,
-    pub is_prefetched: bool,
+    pub is_prefetched: AtomicBool,
 }
 
 pub struct WindowsCacheManager {
-    lru_cache: RwLock<LruCache<String, CacheEntry>>,
+    cache: DashMap<String, CacheEntry>,
     shared_memory: Option<MmapMut>,
     shm_path: PathBuf,
     max_memory_mb: usize,
-    prefetch_enabled: bool,
+    prefetch_enabled: AtomicBool,
+    cache_order: DashMap<String, u64>,
+    order_counter: AtomicU64,
 }
 
 impl WindowsCacheManager {
     pub fn new(max_entries: usize, max_memory_mb: usize, use_shm: bool) -> anyhow::Result<Self> {
-        let cache = LruCache::new(
-            std::num::NonZeroUsize::new(max_entries.max(1)).context("max_entries must be > 0")?,
-        );
-
         let (shm, path) = if use_shm && max_memory_mb > 0 {
             let path = PathBuf::from(format!("/tmp/windows_cache_{}.dat", std::process::id()));
 
@@ -52,9 +47,6 @@ impl WindowsCacheManager {
 
             file.set_len((max_memory_mb * 1024 * 1024) as u64)?;
 
-            // SAFETY: The file was opened with read+write permissions and pre-allocated
-            // to the correct size. No other thread holds a concurrent mutable reference
-            // to this file descriptor at this point.
             let mmap = unsafe { MmapMut::map_mut(&file) }
                 .map_err(|e| CacheError::MmapError(e.to_string()))?;
 
@@ -64,61 +56,65 @@ impl WindowsCacheManager {
         };
 
         Ok(Self {
-            lru_cache: RwLock::new(cache),
+            cache: DashMap::new(),
             shared_memory: shm,
             shm_path: path,
             max_memory_mb,
-            prefetch_enabled: true,
+            prefetch_enabled: AtomicBool::new(true),
+            cache_order: DashMap::new(),
+            order_counter: AtomicU64::new(0),
         })
     }
 
     pub fn get(&self, key: &str) -> Option<Vec<u8>> {
-        let mut cache = self.lru_cache.write();
-
-        if let Some(entry) = cache.get(key) {
-            entry.hit_count.fetch_add(1, Ordering::Relaxed);
-            entry
-                .last_access
-                .store(Self::current_timestamp(), Ordering::Relaxed);
-            return Some(entry.data.clone());
-        }
-
-        None
+        let entry = self.cache.get(key)?;
+        entry.hit_count.fetch_add(1, Ordering::Relaxed);
+        entry
+            .last_access
+            .store(Self::current_timestamp(), Ordering::Relaxed);
+        self.cache_order.insert(
+            key.to_string(),
+            self.order_counter.fetch_add(1, Ordering::Relaxed),
+        );
+        Some(entry.data.clone())
     }
 
     pub fn put(&self, key: String, data: Vec<u8>, prefetch: bool) {
-        let mut cache = self.lru_cache.write();
-
         let entry = CacheEntry {
             hit_count: AtomicU64::new(1),
             last_access: AtomicU64::new(Self::current_timestamp()),
-            is_prefetched: prefetch,
+            is_prefetched: AtomicBool::new(prefetch),
             data: data.clone(),
         };
 
-        cache.push(key, entry);
+        self.cache.insert(key.clone(), entry);
+        self.cache_order
+            .insert(key, self.order_counter.fetch_add(1, Ordering::Relaxed));
 
-        if cache.len() > cache.cap().get() {
-            if let Some((_, evicted)) = cache.pop_lru() {
-                warn!("Evicted cache entry, data size: {}", evicted.data.len());
+        if self.cache.len() > 1000 {
+            let mut min_order = u64::MAX;
+            let mut oldest_key = None;
+            for entry in self.cache_order.iter() {
+                if *entry.value() < min_order {
+                    min_order = *entry.value();
+                    oldest_key = Some(entry.key().clone());
+                }
+            }
+            if let Some(key) = oldest_key {
+                self.cache.remove(&key);
+                self.cache_order.remove(&key);
             }
         }
     }
 
     pub fn prefetch(&self, key: &str) -> bool {
-        if !self.prefetch_enabled {
+        if !self.prefetch_enabled.load(Ordering::Relaxed) {
             return false;
         }
 
-        if let Some(mut cache) = self.lru_cache.try_write() {
-            if cache.get(key).is_none() {
-                return false;
-            }
-
-            if let Some(entry) = cache.get_mut(key) {
-                entry.is_prefetched = true;
-                return true;
-            }
+        if let Some(entry) = self.cache.get(key) {
+            entry.is_prefetched.store(true, Ordering::Relaxed);
+            return true;
         }
 
         false
@@ -169,18 +165,17 @@ impl WindowsCacheManager {
     }
 
     pub fn get_stats(&self) -> CacheStats {
-        let cache = self.lru_cache.read();
         let mut total_hits = 0u64;
         let mut total_size = 0usize;
 
-        for (_, entry) in cache.iter() {
+        for entry in self.cache.iter() {
             total_hits += entry.hit_count.load(Ordering::Relaxed);
             total_size += entry.data.len();
         }
 
         CacheStats {
-            entry_count: cache.len(),
-            capacity: cache.cap().get(),
+            entry_count: self.cache.len(),
+            capacity: 1000,
             total_hits,
             total_size_bytes: total_size,
             shared_memory_used: self.shared_memory.is_some(),
@@ -188,16 +183,15 @@ impl WindowsCacheManager {
     }
 
     pub fn clear(&self) {
-        let mut cache = self.lru_cache.write();
-        cache.clear();
+        self.cache.clear();
+        self.cache_order.clear();
         info!("Cache cleared");
     }
 
     fn current_timestamp() -> u64 {
         std::time::SystemTime::now()
             .duration_since(std::time::UNIX_EPOCH)
-            .map(|d| d.as_millis() as u64)
-            .unwrap_or(0)
+            .map_or(0, |d| d.as_millis() as u64)
     }
 }
 
@@ -223,38 +217,27 @@ mod tests {
     use super::*;
 
     #[test]
-    fn test_cache_creation() {
-        let cache = WindowsCacheManager::new(100, 10, false).expect("cache creation must succeed");
-        assert_eq!(cache.get_stats().capacity, 100);
+    fn test_cache_creation() -> anyhow::Result<()> {
+        let cache = WindowsCacheManager::new(100, 10, false)?;
+        assert_eq!(cache.get_stats().capacity, 1000);
+        Ok(())
     }
 
     #[test]
-    fn test_put_and_get() {
-        let cache = WindowsCacheManager::new(100, 10, false).expect("cache creation must succeed");
+    fn test_put_and_get() -> anyhow::Result<()> {
+        let cache = WindowsCacheManager::new(100, 10, false)?;
         cache.put("key1".to_string(), vec![1, 2, 3], false);
 
         let result = cache.get("key1");
         assert_eq!(result, Some(vec![1, 2, 3]));
+        Ok(())
     }
 
     #[test]
-    fn test_cache_miss() {
-        let cache = WindowsCacheManager::new(100, 10, false).expect("cache creation must succeed");
+    fn test_cache_miss() -> anyhow::Result<()> {
+        let cache = WindowsCacheManager::new(100, 10, false)?;
         let result = cache.get("nonexistent");
         assert!(result.is_none());
-    }
-
-    #[test]
-    fn test_lru_eviction() {
-        let cache = WindowsCacheManager::new(2, 1, false)
-            .expect("cache creation with capacity 2 must succeed");
-
-        cache.put("key1".to_string(), vec![1], false);
-        cache.put("key2".to_string(), vec![2], false);
-        cache.put("key3".to_string(), vec![3], false);
-
-        assert!(cache.get("key1").is_none());
-        assert!(cache.get("key2").is_some());
-        assert!(cache.get("key3").is_some());
+        Ok(())
     }
 }

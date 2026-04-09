@@ -1,6 +1,6 @@
 //! KSM Manager – Controls Kernel Same-page Merging for VM memory optimization
 
-use parking_lot::RwLock;
+use std::sync::atomic::{AtomicBool, AtomicU32, Ordering};
 use thiserror::Error;
 use tracing::{debug, info};
 
@@ -24,21 +24,21 @@ pub struct KsmStats {
 }
 
 pub struct KsmManager {
-    enabled: RwLock<bool>,
-    merge_across_nodes: RwLock<bool>,
-    run_background: RwLock<bool>,
-    pages_to_scan: RwLock<u32>,
-    sleep_millis: RwLock<u32>,
+    enabled: AtomicBool,
+    merge_across_nodes: AtomicBool,
+    run_background: AtomicBool,
+    pages_to_scan: AtomicU32,
+    sleep_millis: AtomicU32,
 }
 
 impl KsmManager {
     pub fn new() -> Self {
         Self {
-            enabled: RwLock::new(false),
-            merge_across_nodes: RwLock::new(true),
-            run_background: RwLock::new(true),
-            pages_to_scan: RwLock::new(1024),
-            sleep_millis: RwLock::new(50),
+            enabled: AtomicBool::new(false),
+            merge_across_nodes: AtomicBool::new(true),
+            run_background: AtomicBool::new(true),
+            pages_to_scan: AtomicU32::new(1024),
+            sleep_millis: AtomicU32::new(50),
         }
     }
 
@@ -52,7 +52,7 @@ impl KsmManager {
         }
 
         self.write_sysfs("run", "1")?;
-        *self.enabled.write() = true;
+        self.enabled.store(true, Ordering::Relaxed);
         info!("KSM enabled");
         Ok(())
     }
@@ -63,13 +63,13 @@ impl KsmManager {
         }
 
         self.write_sysfs("run", "0")?;
-        *self.enabled.write() = false;
+        self.enabled.store(false, Ordering::Relaxed);
         info!("KSM disabled");
         Ok(())
     }
 
     pub fn is_enabled(&self) -> bool {
-        *self.enabled.read()
+        self.enabled.load(Ordering::Relaxed)
     }
 
     pub fn set_merge_across_nodes(&self, enabled: bool) -> Result<(), KsmError> {
@@ -79,19 +79,19 @@ impl KsmManager {
 
         let value = if enabled { "1" } else { "0" };
         self.write_sysfs("merge_across_nodes", value)?;
-        *self.merge_across_nodes.write() = enabled;
+        self.merge_across_nodes.store(enabled, Ordering::Relaxed);
         debug!("KSM merge_across_nodes set to {}", enabled);
         Ok(())
     }
 
     pub fn get_merge_across_nodes(&self) -> bool {
-        *self.merge_across_nodes.read()
+        self.merge_across_nodes.load(Ordering::Relaxed)
     }
 
     pub fn set_run_background(&self, enabled: bool) -> Result<(), KsmError> {
         let value = if enabled { "1" } else { "0" };
         self.write_sysfs("run", value)?;
-        *self.run_background.write() = enabled;
+        self.run_background.store(enabled, Ordering::Relaxed);
         Ok(())
     }
 
@@ -103,7 +103,7 @@ impl KsmManager {
         }
 
         self.write_sysfs("pages_to_scan", &pages.to_string())?;
-        *self.pages_to_scan.write() = pages;
+        self.pages_to_scan.store(pages, Ordering::Relaxed);
         debug!("KSM pages_to_scan set to {}", pages);
         Ok(())
     }
@@ -120,7 +120,7 @@ impl KsmManager {
         }
 
         self.write_sysfs("sleep_millis", &millis.to_string())?;
-        *self.sleep_millis.write() = millis;
+        self.sleep_millis.store(millis, Ordering::Relaxed);
         debug!("KSM sleep_millis set to {} ms", millis);
         Ok(())
     }
@@ -130,11 +130,26 @@ impl KsmManager {
             return Err(KsmError::NotAvailable("KSM not available".to_string()));
         }
 
-        let pages_sharing = self.read_sysfs_u64("pages_sharing").unwrap_or(0);
-        let pages_shared = self.read_sysfs_u64("pages_shared").unwrap_or(0);
-        let pages_volatile = self.read_sysfs_u64("pages_volatile").unwrap_or(0);
-        let full_scans = self.read_sysfs_u64("full_scans").unwrap_or(0);
-        let merge_across_nodes = self.read_sysfs_u32("merge_across_nodes").unwrap_or(1);
+        let pages_sharing = match self.read_sysfs_u64("pages_sharing") {
+            Ok(v) => v,
+            Err(_) => 0,
+        };
+        let pages_shared = match self.read_sysfs_u64("pages_shared") {
+            Ok(v) => v,
+            Err(_) => 0,
+        };
+        let pages_volatile = match self.read_sysfs_u64("pages_volatile") {
+            Ok(v) => v,
+            Err(_) => 0,
+        };
+        let full_scans = match self.read_sysfs_u64("full_scans") {
+            Ok(v) => v,
+            Err(_) => 0,
+        };
+        let merge_across_nodes = match self.read_sysfs_u32("merge_across_nodes") {
+            Ok(v) => v,
+            Err(_) => 1,
+        };
 
         Ok(KsmStats {
             pages_sharing,
@@ -166,9 +181,10 @@ impl KsmManager {
     fn is_writable(&self, file: &str) -> bool {
         let path = format!("/sys/kernel/mm/ksm/{}", file);
         std::path::Path::new(&path).exists()
-            && std::fs::metadata(&path)
-                .map(|m| !m.permissions().readonly())
-                .unwrap_or(false)
+            && match std::fs::metadata(&path) {
+                Ok(m) => !m.permissions().readonly(),
+                Err(_) => false,
+            }
     }
 
     fn read_sysfs_u64(&self, file: &str) -> Result<u64, KsmError> {

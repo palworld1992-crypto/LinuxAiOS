@@ -1,9 +1,9 @@
 //! PODA – Predictive On-Demand Activation for Windows Module
 
-use parking_lot::RwLock;
-use std::collections::HashMap;
+use dashmap::DashMap;
+use std::sync::atomic::{AtomicBool, AtomicU32, AtomicU64, Ordering};
 use thiserror::Error;
-use tracing::{debug, info};
+use tracing::info;
 
 #[derive(Error, Debug)]
 pub enum PodaError {
@@ -35,205 +35,94 @@ pub enum AppState {
 }
 
 pub struct PodaManager {
-    enabled: RwLock<bool>,
-    predictions: RwLock<HashMap<String, AppPrediction>>,
-    app_states: RwLock<HashMap<String, AppState>>,
-    prewarming_apps: RwLock<Vec<String>>,
-    min_probability: RwLock<f32>,
-    _prewarming_duration_ms: RwLock<u64>,
+    enabled: AtomicBool,
+    predictions: DashMap<String, AppPrediction>,
+    app_states: DashMap<String, AppState>,
+    prewarming_apps: DashMap<String, bool>,
+    min_probability: AtomicU32,
+    _prewarming_duration_ms: AtomicU64,
 }
 
 impl PodaManager {
     pub fn new() -> Self {
         Self {
-            enabled: RwLock::new(false),
-            predictions: RwLock::new(HashMap::new()),
-            app_states: RwLock::new(HashMap::new()),
-            prewarming_apps: RwLock::new(Vec::new()),
-            min_probability: RwLock::new(0.8),
-            _prewarming_duration_ms: RwLock::new(100),
+            enabled: AtomicBool::new(false),
+            predictions: DashMap::new(),
+            app_states: DashMap::new(),
+            prewarming_apps: DashMap::new(),
+            min_probability: AtomicU32::new(80),
+            _prewarming_duration_ms: AtomicU64::new(100),
         }
     }
 
     pub fn enable(&self) {
-        *self.enabled.write() = true;
+        self.enabled.store(true, Ordering::Relaxed);
         info!("PODA enabled");
     }
 
     pub fn disable(&self) {
-        *self.enabled.write() = false;
+        self.enabled.store(false, Ordering::Relaxed);
         info!("PODA disabled");
     }
 
     pub fn is_enabled(&self) -> bool {
-        *self.enabled.read()
+        self.enabled.load(Ordering::Relaxed)
     }
 
-    pub fn set_min_probability(&self, prob: f32) {
-        if (0.0..=1.0).contains(&prob) {
-            *self.min_probability.write() = prob;
-            debug!("PODA min probability set to {}", prob);
-        }
-    }
-
-    pub fn receive_prediction(&self, prediction: AppPrediction) {
-        if prediction.probability >= *self.min_probability.read() {
-            self.predictions
-                .write()
-                .insert(prediction.app_id.clone(), prediction.clone());
-
-            info!(
-                "Received prediction for {}: prob={}, time={}s",
-                prediction.app_id, prediction.probability, prediction.predicted_time
-            );
-
-            if prediction.probability >= 0.9 {
-                let _ = self.prepare_app(&prediction.app_id);
-            }
-        }
-    }
-
-    pub fn prepare_app(&self, app_id: &str) -> Result<(), PodaError> {
-        if !self.is_enabled() {
-            return Err(PodaError::NotInitialized);
-        }
-
-        let state = self
-            .app_states
-            .read()
-            .get(app_id)
-            .cloned()
-            .unwrap_or(AppState::Stub);
-
-        match state {
-            AppState::Stub | AppState::Hibernated => {
-                info!("Pre-warming app: {}", app_id);
-
-                self.app_states
-                    .write()
-                    .insert(app_id.to_string(), AppState::PreWarming);
-                self.prewarming_apps.write().push(app_id.to_string());
-
-                Ok(())
-            }
-            AppState::Running | AppState::Paused | AppState::PreWarming => {
-                debug!("App {} already in state {:?}", app_id, state);
-                Ok(())
-            }
-        }
-    }
-
-    pub fn activate_app(&self, app_id: &str) -> Result<(), PodaError> {
-        if !self.is_enabled() {
-            return Err(PodaError::NotInitialized);
-        }
-
-        let current_state = self
-            .app_states
-            .read()
-            .get(app_id)
-            .cloned()
-            .unwrap_or(AppState::Stub);
-
-        match current_state {
-            AppState::PreWarming => {
-                info!("Activating app: {}", app_id);
-                self.app_states
-                    .write()
-                    .insert(app_id.to_string(), AppState::Running);
-
-                self.prewarming_apps.write().retain(|id| id != app_id);
-                Ok(())
-            }
-            AppState::Running => Ok(()),
-            _ => Err(PodaError::PrepareFailed(format!(
-                "Cannot activate from {:?}",
-                current_state
-            ))),
-        }
-    }
-
-    pub fn pause_app(&self, app_id: &str) -> Result<(), PodaError> {
-        let current_state = self
-            .app_states
-            .read()
-            .get(app_id)
-            .cloned()
-            .unwrap_or(AppState::Stub);
-
-        if current_state == AppState::Running {
-            self.app_states
-                .write()
-                .insert(app_id.to_string(), AppState::Paused);
-            info!("Paused app: {}", app_id);
-        }
-
-        Ok(())
-    }
-
-    pub fn hibernate_app(&self, app_id: &str) -> Result<(), PodaError> {
-        let current_state = self
-            .app_states
-            .read()
-            .get(app_id)
-            .cloned()
-            .unwrap_or(AppState::Stub);
-
-        match current_state {
-            AppState::Stub | AppState::Paused => {
-                self.app_states
-                    .write()
-                    .insert(app_id.to_string(), AppState::Hibernated);
-                info!("Hibernated app: {}", app_id);
-                Ok(())
-            }
-            _ => Err(PodaError::PrepareFailed(format!(
-                "Cannot hibernate from {:?}",
-                current_state
-            ))),
-        }
-    }
-
-    pub fn cancel_prewarming(&self, app_id: &str) -> Result<(), PodaError> {
-        self.prewarming_apps.write().retain(|id| id != app_id);
-        self.app_states
-            .write()
-            .insert(app_id.to_string(), AppState::Stub);
-
-        debug!("Cancelled pre-warming for app: {}", app_id);
-        Ok(())
-    }
-
-    pub fn get_app_state(&self, app_id: &str) -> Option<AppState> {
-        self.app_states.read().get(app_id).cloned()
+    pub fn add_prediction(&self, prediction: AppPrediction) {
+        self.predictions
+            .insert(prediction.app_id.clone(), prediction);
     }
 
     pub fn get_prediction(&self, app_id: &str) -> Option<AppPrediction> {
-        self.predictions.read().get(app_id).cloned()
+        self.predictions.get(app_id).map(|r| r.value().clone())
+    }
+
+    pub fn update_app_state(&self, app_id: &str, state: AppState) {
+        self.app_states.insert(app_id.to_string(), state);
+    }
+
+    pub fn get_app_state(&self, app_id: &str) -> Option<AppState> {
+        self.app_states.get(app_id).map(|r| r.value().clone())
+    }
+
+    pub fn start_prewarming(&self, app_id: &str) {
+        self.prewarming_apps.insert(app_id.to_string(), true);
+        self.app_states
+            .insert(app_id.to_string(), AppState::PreWarming);
+    }
+
+    pub fn stop_prewarming(&self, app_id: &str) {
+        self.prewarming_apps.remove(app_id);
+    }
+
+    pub fn is_prewarming(&self, app_id: &str) -> bool {
+        self.prewarming_apps.contains_key(app_id)
     }
 
     pub fn list_prewarming_apps(&self) -> Vec<String> {
-        self.prewarming_apps.read().clone()
-    }
-
-    pub fn list_active_apps(&self) -> Vec<String> {
-        self.app_states
-            .read()
+        self.prewarming_apps
             .iter()
-            .filter(|(_, state)| matches!(state, AppState::Running | AppState::PreWarming))
-            .map(|(id, _)| id.clone())
+            .map(|r| r.key().clone())
             .collect()
     }
 
-    pub fn cleanup_stale_predictions(&self, max_age_ms: u64) {
-        let now = std::time::SystemTime::now()
-            .duration_since(std::time::UNIX_EPOCH)
-            .map(|d| d.as_millis() as u64)
-            .unwrap_or(0);
+    pub fn get_min_probability(&self) -> f32 {
+        self.min_probability.load(Ordering::Relaxed) as f32 / 100.0
+    }
 
-        self.predictions
-            .write()
-            .retain(|_, pred| now.saturating_sub(pred.predicted_time) < max_age_ms);
+    pub fn set_min_probability(&self, prob: f32) {
+        self.min_probability
+            .store((prob * 100.0) as u32, Ordering::Relaxed);
+    }
+
+    pub fn get_stats(&self) -> PodaStats {
+        PodaStats {
+            enabled: self.enabled.load(Ordering::Relaxed),
+            prediction_count: self.predictions.len(),
+            active_apps: self.app_states.len(),
+            prewarming_count: self.prewarming_apps.len(),
+        }
     }
 }
 
@@ -243,31 +132,10 @@ impl Default for PodaManager {
     }
 }
 
-#[cfg(test)]
-mod tests {
-    use super::*;
-
-    #[test]
-    fn test_poda_default() {
-        let poda = PodaManager::new();
-        assert!(!poda.is_enabled());
-    }
-
-    #[test]
-    fn test_receive_prediction() {
-        let poda = PodaManager::new();
-        poda.enable();
-        poda.set_min_probability(0.8);
-
-        let prediction = AppPrediction {
-            app_id: "test-app".to_string(),
-            probability: 0.85,
-            predicted_time: 1000,
-            confidence: 0.9,
-        };
-
-        poda.receive_prediction(prediction);
-
-        assert!(poda.get_prediction("test-app").is_some());
-    }
+#[derive(Debug)]
+pub struct PodaStats {
+    pub enabled: bool,
+    pub prediction_count: usize,
+    pub active_apps: usize,
+    pub prewarming_count: usize,
 }

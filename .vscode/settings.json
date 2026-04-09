@@ -18,6 +18,23 @@
     "C_Cpp.default.cppStandard": "c++23",
     "C_Cpp.default.cStandard": "c17",
     "C_Cpp.default.intelliSenseMode": "linux-gcc-x64",
+	// --- FIX LỖI 502 UPSTREAM (ALIBABA/OPENROUTER) ---
+    "opencode.api.debounceMs": 1500,
+    "opencode.api.maxRetries": 3,
+    "opencode.api.timeout": 30000,
+    "opencode.ai.streamResponse": true,
+    
+    // Ép OpenRouter sử dụng fallback nếu model chính lỗi
+    "opencode.api.model": "alibaba/qwen-2.5-plus,alibaba/qwen-2.5-72b-instruct,google/gemini-flash-1.5",
+
+    // --- GIAO DIỆN & TERMINAL ---
+    "files.exclude": {
+        "**/target": true,
+        "**/obj": true,
+        "**/zig-out": true,
+        "**/zig-cache": true,
+        "**/.build": true
+    },
     // Thêm includePath nếu bạn dùng CUDA cho module Neuron AI
     "C_Cpp.default.includePath": [
         "${workspaceFolder}/**",

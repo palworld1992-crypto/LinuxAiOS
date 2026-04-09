@@ -1,7 +1,6 @@
 //! GPU Backend for Windows Assistant – detects and uses GPU for inference
 
-use parking_lot::RwLock;
-use std::process::Command;
+use std::sync::atomic::{AtomicBool, AtomicU64, Ordering};
 use thiserror::Error;
 use tracing::info;
 
@@ -22,45 +21,40 @@ pub enum GpuBackend {
 }
 
 pub struct WindowsGpuBackend {
-    backend: RwLock<GpuBackend>,
-    device_name: RwLock<Option<String>>,
-    vulkan_available: RwLock<bool>,
-    cuda_available: RwLock<bool>,
+    backend: AtomicU64,
+    device_name: std::sync::OnceLock<Option<String>>,
+    vulkan_available: AtomicBool,
+    cuda_available: AtomicBool,
 }
 
 impl WindowsGpuBackend {
     pub fn new() -> Self {
         let (vulkan, cuda) = Self::detect_gpu_apis();
-        let backend = if vulkan || cuda {
-            GpuBackend::Wgpu
-        } else {
-            GpuBackend::Cpu
-        };
+        let backend = if vulkan || cuda { 1 } else { 0 };
 
         Self {
-            backend: RwLock::new(backend),
-            device_name: RwLock::new(Self::detect_device_name()),
-            vulkan_available: RwLock::new(vulkan),
-            cuda_available: RwLock::new(cuda),
+            backend: AtomicU64::new(backend),
+            device_name: std::sync::OnceLock::new(),
+            vulkan_available: AtomicBool::new(vulkan),
+            cuda_available: AtomicBool::new(cuda),
         }
     }
 
     fn detect_gpu_apis() -> (bool, bool) {
         let vulkan = Self::check_vulkan();
         let cuda = Self::check_cuda();
-
         (vulkan, cuda)
     }
 
     fn check_vulkan() -> bool {
-        if let Ok(output) = Command::new("vulkaninfo").output() {
+        if let Ok(output) = std::process::Command::new("vulkaninfo").output() {
             return output.status.success();
         }
         false
     }
 
     fn check_cuda() -> bool {
-        if let Ok(output) = Command::new("nvidia-smi").output() {
+        if let Ok(output) = std::process::Command::new("nvidia-smi").output() {
             if output.status.success() {
                 return true;
             }
@@ -69,7 +63,7 @@ impl WindowsGpuBackend {
     }
 
     fn detect_device_name() -> Option<String> {
-        if let Ok(output) = Command::new("nvidia-smi").output() {
+        if let Ok(output) = std::process::Command::new("nvidia-smi").output() {
             if output.status.success() {
                 let stdout = String::from_utf8_lossy(&output.stdout);
                 for line in stdout.lines() {
@@ -80,7 +74,7 @@ impl WindowsGpuBackend {
             }
         }
 
-        if let Ok(output) = Command::new("vulkaninfo").output() {
+        if let Ok(output) = std::process::Command::new("vulkaninfo").output() {
             if output.status.success() {
                 let stdout = String::from_utf8_lossy(&output.stdout);
                 for line in stdout.lines() {
@@ -95,11 +89,13 @@ impl WindowsGpuBackend {
     }
 
     pub fn init(&mut self) -> Result<(), GpuError> {
-        let backend = self.backend.read().clone();
+        let backend = self.get_backend();
 
         match backend {
             GpuBackend::Wgpu => {
-                if *self.vulkan_available.read() || *self.cuda_available.read() {
+                if self.vulkan_available.load(Ordering::Relaxed)
+                    || self.cuda_available.load(Ordering::Relaxed)
+                {
                     info!("Initializing GPU backend with WGPU");
                     return Ok(());
                 }
@@ -113,23 +109,26 @@ impl WindowsGpuBackend {
     }
 
     pub fn get_backend(&self) -> GpuBackend {
-        self.backend.read().clone()
+        match self.backend.load(Ordering::Relaxed) {
+            0 => GpuBackend::Cpu,
+            _ => GpuBackend::Wgpu,
+        }
     }
 
     pub fn get_device_name(&self) -> Option<String> {
-        self.device_name.read().clone()
+        self.device_name.get().and_then(|d| d.clone())
     }
 
     pub fn has_vulkan(&self) -> bool {
-        *self.vulkan_available.read()
+        self.vulkan_available.load(Ordering::Relaxed)
     }
 
     pub fn has_cuda(&self) -> bool {
-        *self.cuda_available.read()
+        self.cuda_available.load(Ordering::Relaxed)
     }
 
     pub fn get_compute_units(&self) -> usize {
-        if let Some(ref name) = *self.device_name.read() {
+        if let Some(name) = self.device_name.get().and_then(|v| (*v).as_ref()) {
             if name.contains("RTX") || name.contains("GTX") {
                 return 3072;
             }
@@ -138,7 +137,7 @@ impl WindowsGpuBackend {
     }
 
     pub fn get_vram_gb(&self) -> u32 {
-        if let Ok(output) = Command::new("nvidia-smi")
+        if let Ok(output) = std::process::Command::new("nvidia-smi")
             .args(["--query-gpu=memory.total", "--format=csv,noheader,nounits"])
             .output()
         {

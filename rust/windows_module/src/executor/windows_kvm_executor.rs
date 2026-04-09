@@ -1,8 +1,9 @@
 //! KVM Executor for Windows Module
 
 use libc::{kill, SIGCONT, SIGSTOP, SIGTERM};
-use parking_lot::RwLock;
 use std::process::Child;
+use std::sync::atomic::{AtomicBool, AtomicU32, Ordering};
+use std::sync::Arc;
 use thiserror::Error;
 use tracing::info;
 
@@ -48,33 +49,33 @@ impl Default for KvmConfig {
 }
 
 pub struct KvmExecutor {
-    config: RwLock<KvmConfig>,
-    child: RwLock<Option<Child>>,
-    running: RwLock<bool>,
-    vm_pid: RwLock<Option<u32>>,
+    config: Arc<KvmConfig>,
+    child: Arc<tokio::sync::Mutex<Option<Child>>>,
+    running: AtomicBool,
+    vm_pid: AtomicU32,
 }
 
 impl KvmExecutor {
     pub fn new() -> Self {
         Self {
-            config: RwLock::new(KvmConfig::default()),
-            child: RwLock::new(None),
-            running: RwLock::new(false),
-            vm_pid: RwLock::new(None),
+            config: Arc::new(KvmConfig::default()),
+            child: Arc::new(tokio::sync::Mutex::new(None)),
+            running: AtomicBool::new(false),
+            vm_pid: AtomicU32::new(0),
         }
     }
 
     pub fn with_config(config: KvmConfig) -> Self {
         Self {
-            config: RwLock::new(config),
-            child: RwLock::new(None),
-            running: RwLock::new(false),
-            vm_pid: RwLock::new(None),
+            config: Arc::new(config),
+            child: Arc::new(tokio::sync::Mutex::new(None)),
+            running: AtomicBool::new(false),
+            vm_pid: AtomicU32::new(0),
         }
     }
 
-    pub fn set_config(&self, config: KvmConfig) {
-        *self.config.write() = config;
+    pub fn set_config(&mut self, config: KvmConfig) {
+        self.config = Arc::new(config);
     }
 
     pub fn check_kvm_availability(&self) -> Result<bool, KvmError> {
@@ -83,22 +84,31 @@ impl KvmExecutor {
             return Err(KvmError::NotAvailable("/dev/kvm not found".to_string()));
         }
 
+        if let Ok(metadata) = std::fs::metadata(kvm_path) {
+            if metadata.permissions().readonly() {
+                return Err(KvmError::NotAvailable(
+                    "/dev/kvm is not readable".to_string(),
+                ));
+            }
+        }
+
         if let Ok(output) = std::process::Command::new("kvm-ok").output() {
             if output.status.success() {
                 return Ok(true);
             }
         }
 
-        Ok(true)
+        tracing::warn!("KVM device exists but kvm-ok failed");
+        Ok(false)
     }
 
-    pub fn start(&self) -> Result<u32, KvmError> {
-        if *self.running.read() {
-            let pid = self.vm_pid.read();
-            return Ok(pid.unwrap_or(0));
+    pub async fn start(&self) -> Result<u32, KvmError> {
+        if self.running.load(Ordering::Relaxed) {
+            let pid = self.vm_pid.load(Ordering::Relaxed);
+            return Ok(pid);
         }
 
-        let cfg = self.config.read().clone();
+        let cfg = self.config.as_ref().clone();
 
         if cfg.kernel.is_none() && cfg.disk_image.is_none() {
             return Err(KvmError::NotAvailable(
@@ -147,58 +157,61 @@ impl KvmExecutor {
             .map_err(|e| KvmError::StartError(e.to_string()))?;
         let pid = child.id();
 
-        *self.child.write() = Some(child);
-        *self.running.write() = true;
-        *self.vm_pid.write() = Some(pid);
+        {
+            let mut child_lock = self.child.lock().await;
+            *child_lock = Some(child);
+        }
+        self.running.store(true, Ordering::Relaxed);
+        self.vm_pid.store(pid, Ordering::Relaxed);
 
         info!("KVM started with PID {}", pid);
         Ok(pid)
     }
 
-    pub fn stop(&self) -> Result<(), KvmError> {
-        if let Some(pid) = *self.vm_pid.read() {
-            // SAFETY: pid is a valid child process PID that was obtained from
-            // child.id() when the process was spawned. SIGTERM is safe to send.
-            let _ = unsafe { kill(pid as i32, SIGTERM) };
+    pub async fn stop(&self) -> Result<(), KvmError> {
+        let pid = self.vm_pid.load(Ordering::Relaxed);
+        if pid != 0 {
+            unsafe { kill(pid as i32, SIGTERM) };
         }
 
-        if let Some(mut child) = self.child.write().take() {
-            let _ = child.kill();
-            let _ = child.wait();
+        {
+            let mut child_lock = self.child.lock().await;
+            if let Some(mut child) = child_lock.take() {
+                let _ = child.kill();
+                let _ = child.wait();
+            }
         }
 
-        *self.running.write() = false;
-        *self.vm_pid.write() = None;
+        self.running.store(false, Ordering::Relaxed);
+        self.vm_pid.store(0, Ordering::Relaxed);
         info!("KVM stopped");
         Ok(())
     }
 
-    pub fn pause(&self) -> Result<(), KvmError> {
-        if let Some(pid) = *self.vm_pid.read() {
-            // SAFETY: pid is a valid running child process PID. SIGSTOP is safe to send
-            // to pause a child process that we own and spawned ourselves.
-            let _ = unsafe { kill(pid as i32, SIGSTOP) };
+    pub async fn pause(&self) -> Result<(), KvmError> {
+        let pid = self.vm_pid.load(Ordering::Relaxed);
+        if pid != 0 {
+            unsafe { kill(pid as i32, SIGSTOP) };
             info!("KVM paused");
         }
         Ok(())
     }
 
-    pub fn resume(&self) -> Result<(), KvmError> {
-        if let Some(pid) = *self.vm_pid.read() {
-            // SAFETY: pid is a valid running child process PID. SIGCONT is safe to send
-            // to resume a paused process that we own and spawned ourselves.
-            let _ = unsafe { kill(pid as i32, SIGCONT) };
+    pub async fn resume(&self) -> Result<(), KvmError> {
+        let pid = self.vm_pid.load(Ordering::Relaxed);
+        if pid != 0 {
+            unsafe { kill(pid as i32, SIGCONT) };
             info!("KVM resumed");
         }
         Ok(())
     }
 
     pub fn is_running(&self) -> bool {
-        *self.running.read()
+        self.running.load(Ordering::Relaxed)
     }
 
-    pub fn get_pid(&self) -> Option<u32> {
-        *self.vm_pid.read()
+    pub fn get_pid(&self) -> u32 {
+        self.vm_pid.load(Ordering::Relaxed)
     }
 
     pub fn get_status(&self) -> String {

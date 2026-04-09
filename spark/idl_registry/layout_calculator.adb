@@ -1,3 +1,7 @@
+--  SPARK_Mode (Off): Calls Type_Mapper.Map_Type which has SPARK_Mode (Off)
+--  due to access type operations. Cannot be formally verified by SPARK.
+pragma SPARK_Mode (Off);
+
 with IDL_Types;
 with Type_Mapper;
 with Interfaces.C;

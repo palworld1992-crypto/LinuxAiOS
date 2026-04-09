@@ -2,13 +2,30 @@ use std::env;
 use std::path::PathBuf;
 
 fn main() {
-    let crate_dir = env::var("CARGO_MANIFEST_DIR").unwrap();
-    let workspace_root = PathBuf::from(&crate_dir)
-        .parent()
-        .unwrap()
-        .parent()
-        .unwrap()
-        .to_path_buf();
+    let crate_dir = match env::var("CARGO_MANIFEST_DIR") {
+        Ok(dir) => dir,
+        Err(_) => {
+            eprintln!("CARGO_MANIFEST_DIR not set");
+            std::process::exit(1);
+        }
+    };
+
+    let crate_path = PathBuf::from(&crate_dir);
+    let parent1 = match crate_path.parent() {
+        Some(p) => p,
+        None => {
+            eprintln!("Failed to get workspace root (parent of crate dir)");
+            std::process::exit(1);
+        }
+    };
+    let workspace_root = match parent1.parent() {
+        Some(p) => p.to_path_buf(),
+        None => {
+            eprintln!("Failed to get workspace root (parent of parent)");
+            std::process::exit(1);
+        }
+    };
+
     let include_dir = workspace_root.join("include");
     std::fs::create_dir_all(&include_dir).ok();
 
@@ -25,13 +42,19 @@ fn main() {
         ..Default::default()
     };
 
-    let bindings = cbindgen::Builder::new()
+    let bindings = match cbindgen::Builder::new()
         .with_crate(&crate_dir)
         .with_config(config)
         .exclude_item("loom_tests")
         .exclude_item("snn_latency")
         .generate()
-        .expect("Unable to generate bindings");
+    {
+        Ok(b) => b,
+        Err(e) => {
+            eprintln!("Failed to generate bindings: {}", e);
+            std::process::exit(1);
+        }
+    };
 
     bindings.write_to_file(&header_path);
 

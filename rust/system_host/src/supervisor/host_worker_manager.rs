@@ -16,12 +16,12 @@ impl HostWorkerManager {
     pub async fn call_worker(&self, worker_name: &str, request: Vec<u8>) -> Result<Vec<u8>> {
         // Gửi yêu cầu qua SCC đến worker (worker đăng ký với ConnectionManager)
         // Hiện tại ConnectionManager chưa hỗ trợ request-response, chỉ có send one-way.
-        // Tạm thời trả về lỗi.
-        // TODO: implement proper request-response using channels or a separate mechanism.
+        // TODO(Phase 7): implement proper request-response using channels or a separate mechanism.
         self
             .conn_mgr
             .send(worker_name, request)
             .map_err(|e| anyhow!("Failed to send to worker: {}", e))?;
+        // TODO(Phase 7): implement request-response over SCC
         Err(anyhow!("Worker response not implemented yet"))
     }
 }

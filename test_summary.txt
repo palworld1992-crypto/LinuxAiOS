@@ -1,0 +1,23 @@
+Test Results Summary for AIOS Modules:
+
+adaptive_backend: 35 passed; 0 failed
+android_module: 218 passed; 1 failed
+child_tunnel: 23 passed; 0 failed
+common: 89 passed; 0 failed
+database_tunnel: 1 passed; 0 failed
+fuzz: 0 passed; 0 failed (profile completed)
+health_master_tunnel: 4 passed; 0 failed
+health_tunnel: 12 passed; 0 failed
+linux_module: 164 passed; 0 failed
+master_tunnel: 42 passed; 0 failed
+scc: 92 passed; 0 failed
+shared_buffer: 0 passed; 0 failed
+sih: 30 passed; 0 failed
+system_host: 53 passed; 0 failed
+
+TOTAL: 763 passed; 1 failed
+
+Overall Success Rate: 99.87% (763/764 tests)
+
+The single failing test is:
+android_assistant::android_assistant::tests::test_tensor_pool_access

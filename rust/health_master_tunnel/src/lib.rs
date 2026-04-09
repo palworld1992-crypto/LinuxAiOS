@@ -1,8 +1,14 @@
 //! Health Master Tunnel – blockchain for storing supervisor health snapshots.
 
+mod consensus;
+mod server;
+
+pub use consensus::{HealthConsensusProposal, HealthMasterConsensus, SupervisorHealthState};
+pub use server::{run_server, HealthMasterMessage, HealthMasterServer};
+
 use anyhow::Result;
 use common::utils::current_timestamp_ms;
-use parking_lot::RwLock;
+use dashmap::DashMap;
 use serde::{Deserialize, Serialize};
 use sha2::Digest;
 use std::collections::HashMap;
@@ -27,8 +33,8 @@ pub struct HealthSnapshot {
 }
 
 pub struct HealthMasterTunnel {
-    snapshots: RwLock<Vec<HealthSnapshot>>, // latest 3 snapshots (index 0 = current, 1 = previous, 2 = default)
-    default: RwLock<Option<HealthSnapshot>>,
+    snapshots: DashMap<u64, HealthSnapshot>, // key: timestamp
+    default: DashMap<(), Option<HealthSnapshot>>,
 }
 
 impl Default for HealthMasterTunnel {
@@ -40,26 +46,21 @@ impl Default for HealthMasterTunnel {
 impl HealthMasterTunnel {
     pub fn new() -> Self {
         Self {
-            snapshots: RwLock::new(Vec::new()),
-            default: RwLock::new(None),
+            snapshots: DashMap::new(),
+            default: DashMap::new(),
         }
     }
 
-    /// Record a new health snapshot for all supervisors.
     pub fn record_snapshot(&self, supervisors: HashMap<u64, SupervisorHealth>) -> Result<()> {
         self.record_snapshot_with_risk(supervisors, None, None)
     }
 
-    /// Record snapshot with risk level (from Linux Supervisor).
     pub fn record_snapshot_with_risk(
         &self,
         supervisors: HashMap<u64, SupervisorHealth>,
         risk_level: Option<u8>,
         risk_signature: Option<Vec<u8>>,
     ) -> Result<()> {
-        let mut snapshots = self.snapshots.write();
-        let prev = snapshots.first().cloned();
-        let prev_hash = prev.map(|s| s.hash).unwrap_or_else(|| vec![0u8; 32]);
         let timestamp = current_timestamp_ms();
         let mut snapshot = HealthSnapshot {
             version: 1,
@@ -67,53 +68,81 @@ impl HealthMasterTunnel {
             risk_level,
             risk_signature,
             timestamp,
-            prev_hash: prev_hash.clone(),
-            hash: vec![], // will compute
+            prev_hash: vec![],
+            hash: vec![],
         };
-        // Compute hash: serialize entire snapshot (excluding hash field) and hash
+        let prev_hash = if let Some(prev) = self.current() {
+            prev.hash
+        } else {
+            vec![0u8; 32]
+        };
+        snapshot.prev_hash = prev_hash.clone();
+
         let mut snapshot_copy = snapshot.clone();
         snapshot_copy.hash = vec![];
         let bytes = bincode::serialize(&snapshot_copy)?;
         snapshot.hash = sha2::Sha256::digest(&bytes).to_vec();
 
-        // Keep only latest 3 snapshots (index 0 = latest)
-        snapshots.insert(0, snapshot);
-        if snapshots.len() > 3 {
-            snapshots.truncate(3);
+        self.snapshots.insert(timestamp, snapshot);
+
+        while self.snapshots.len() > 3 {
+            if let Some(min_entry) = self.snapshots.iter().min_by_key(|e| *e.key()) {
+                self.snapshots.remove(min_entry.key());
+            } else {
+                break;
+            }
         }
+
         Ok(())
     }
 
-    /// Set the default snapshot (initial state).
     pub fn set_default(&self, snapshot: HealthSnapshot) {
-        *self.default.write() = Some(snapshot);
+        self.default.insert((), Some(snapshot));
     }
 
-    /// Get the default snapshot.
     pub fn default_snapshot(&self) -> Option<HealthSnapshot> {
-        self.default.read().clone()
+        self.default.get(&()).and_then(|opt| opt.clone())
     }
 
-    /// Get the current snapshot (latest).
     pub fn current(&self) -> Option<HealthSnapshot> {
-        self.snapshots.read().first().cloned()
-    }
-
-    /// Get the previous snapshot.
-    pub fn previous(&self) -> Option<HealthSnapshot> {
-        self.snapshots.read().get(1).cloned()
-    }
-
-    /// Rollback to the previous snapshot (if exists).
-    pub fn rollback(&self) -> Option<HealthSnapshot> {
-        let mut snapshots = self.snapshots.write();
-        if snapshots.len() >= 2 {
-            let prev = snapshots[1].clone();
-            snapshots.remove(0);
-            Some(prev)
-        } else {
-            None
+        let mut max_ts = None;
+        let mut max_snapshot = None;
+        for entry in self.snapshots.iter() {
+            let ts = *entry.key();
+            if max_ts.map_or(true, |m| ts > m) {
+                max_ts = Some(ts);
+                max_snapshot = Some(entry.value().clone());
+            }
         }
+        max_snapshot
+    }
+
+    pub fn previous(&self) -> Option<HealthSnapshot> {
+        let mut all: Vec<_> = self
+            .snapshots
+            .iter()
+            .map(|e| (*e.key(), e.value().clone()))
+            .collect();
+        if all.len() < 2 {
+            return None;
+        }
+        all.sort_by(|a, b| b.0.cmp(&a.0));
+        Some(all[1].1.clone())
+    }
+
+    pub fn rollback(&self) -> Option<HealthSnapshot> {
+        let mut all: Vec<_> = self
+            .snapshots
+            .iter()
+            .map(|e| (*e.key(), e.value().clone()))
+            .collect();
+        if all.len() < 2 {
+            return None;
+        }
+        all.sort_by(|a, b| b.0.cmp(&a.0));
+        let prev_snapshot = all[1].1.clone();
+        self.snapshots.remove(&all[0].0);
+        Some(prev_snapshot)
     }
 }
 
@@ -128,7 +157,7 @@ mod tests {
     }
 
     #[test]
-    fn test_record_snapshot() {
+    fn test_record_snapshot() -> anyhow::Result<()> {
         let tunnel = HealthMasterTunnel::new();
         let mut supervisors = HashMap::new();
         supervisors.insert(
@@ -140,14 +169,17 @@ mod tests {
                 timestamp: 1000,
             },
         );
-        assert!(tunnel.record_snapshot(supervisors).is_ok());
+        tunnel.record_snapshot(supervisors)?;
 
-        let current = tunnel.current().unwrap();
+        let current = tunnel
+            .current()
+            .ok_or_else(|| anyhow::anyhow!("No current snapshot"))?;
         assert_eq!(current.supervisors.len(), 1);
+        Ok(())
     }
 
     #[test]
-    fn test_rollback() {
+    fn test_rollback() -> anyhow::Result<()> {
         let tunnel = HealthMasterTunnel::new();
 
         for i in 0..3 {
@@ -161,16 +193,19 @@ mod tests {
                     timestamp: 1000 + i as u64,
                 },
             );
-            tunnel.record_snapshot(supervisors).unwrap();
+            tunnel.record_snapshot(supervisors)?;
         }
 
-        let _before = tunnel.current().unwrap();
+        let _before = tunnel
+            .current()
+            .ok_or_else(|| anyhow::anyhow!("No current snapshot"))?;
         let result = tunnel.rollback();
         assert!(result.is_some());
+        Ok(())
     }
 
     #[test]
-    fn test_default_snapshot() {
+    fn test_default_snapshot() -> anyhow::Result<()> {
         let tunnel = HealthMasterTunnel::new();
         let snapshot = HealthSnapshot {
             version: 1,
@@ -183,7 +218,10 @@ mod tests {
         };
         tunnel.set_default(snapshot.clone());
 
-        let default = tunnel.default_snapshot().unwrap();
+        let default = tunnel
+            .default_snapshot()
+            .ok_or_else(|| anyhow::anyhow!("No default snapshot"))?;
         assert_eq!(default.risk_level, Some(0));
+        Ok(())
     }
 }

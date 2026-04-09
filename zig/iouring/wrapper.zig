@@ -1,5 +1,5 @@
 const std = @import("std");
-const linux = std.os.linux;
+const linux = @import("std").os.linux;
 
 pub const IoUring = extern struct {
     ring_fd: i32,
@@ -7,88 +7,82 @@ pub const IoUring = extern struct {
     mapped: bool,
 };
 
-const SYS_io_uring_setup: linux.syscall_number = 425;
-const SYS_io_uring_enter: linux.syscall_number = 426;
-const SYS_io_uring_register: linux.syscall_number = 427;
-
-const IORING_SETUP_IOPOLL: u32 = 1 << 0;
-const IORING_SETUP_SQPOLL: u32 = 1 << 1;
-const IORING_SETUP_SQ_AFF: u32 = 1 << 2;
-const IORING_SETUP_CQSIZE: u32 = 1 << 3;
-const IORING_SETUP_CLAMP: u32 = 1 << 4;
-const IORING_SETUP_ATTACH_WQ: u32 = 1 << 5;
-const IORING_SETUP_R_DISABLED: u32 = 1 << 6;
-
-const IORING_OP_READV: u32 = 0;
-const IORING_OP_WRITEV: u32 = 1;
-const IORING_OP_FSYNC: u32 = 2;
-const IORING_OP_READ_FIXED: u32 = 5;
-const IORING_OP_WRITE_FIXED: u32 = 6;
-const IORING_OP_OPENAT: u32 = 7;
-
-const IOSQE_FIXED_FILE: u32 = 1 << 0;
-const IOSQE_IO_DRAIN: u32 = 1 << 1;
-const IOSQE_IO_LINK: u32 = 1 << 2;
-const IOSQE_IO_HARDLINK: u32 = 1 << 3;
-const IOSQE_ASYNC: u32 = 1 << 4;
-const IOSQE_BUFFER_SELECT: u32 = 1 << 5;
-
-const IORING_ENTER_GETEVENTS: u32 = 1 << 0;
-const IORING_ENTER_SQ_WAKEUP: u32 = 1 << 1;
-const IORING_ENTER_SQ_WAIT: u32 = 1 << 2;
-const IORING_ENTER_EXT_ARG: u32 = 1 << 3;
+const IORING_OP_READ: u8 = 22;
+const IORING_OP_WRITE: u8 = 23;
+const IORING_OP_OPENAT: u8 = 18;
 
 const IORING_REGISTER_BUFFERS: u32 = 0;
-const IORING_UNREGISTER_BUFFERS: u32 = 1;
-const IORING_REGISTER_FILES: u32 = 2;
-const IORING_UNREGISTER_FILES: u32 = 3;
+const IORING_SETUP_SQPOLL: u32 = 1 << 1;
 
-const O_RDONLY: i32 = 0;
-const O_WRONLY: i32 = 1;
-const O_RDWR: i32 = 2;
+const SQ_RING_OFFSET: usize = 0x100000;
+const CQ_RING_OFFSET: usize = 0x200000;
 
-fn io_uring_setup(entries: u32, params: *linux.io_uring_params) i32 {
-    return @intCast(linux.syscall2(SYS_io_uring_setup, entries, @intFromPtr(params)));
+pub const IoUringSqe = extern struct {
+    opcode: u8,
+    flags: u8,
+    ioprio: u16,
+    fd: i32,
+    off: u64,
+    addr: u64,
+    len: u32,
+    rw_flags: i32,
+    user_data: u64,
+    buf_index: u16,
+    personality: u16,
+    splice_fd_in: i32,
+};
+
+pub const IoUringParams = extern struct {
+    sq_entries: u32,
+    cq_entries: u32,
+    flags: u32,
+    sq_thread_cpu: u32,
+    sq_thread_idle: u32,
+    features: u32,
+    wq_fd: u32,
+    resv: [3]u32,
+    sq_off: [8]u32,
+    cq_off: [8]u32,
+};
+
+const IoUringRing = struct {
+    head: *u32,
+    tail: *u32,
+    mask: *u32,
+    entries: [*]IoUringSqe,
+    overflow: *u32,
+    cqes: [*]u64,
+};
+
+fn syscallResult(result: usize) i32 {
+    const as_isize: isize = @bitCast(result);
+    if (as_isize < 0) return -1;
+    return @as(i32, @intCast(result));
 }
 
-fn io_uring_enter(fd: i32, to_submit: u32, min_complete: u32, flags: u32, sig: ?*linux.siginfo_t) i32 {
-    return @intCast(linux.syscall5(SYS_io_uring_enter, @intCast(fd), to_submit, min_complete, flags, @intFromPtr(sig)));
+fn ioUringSetup(entries: u32, params: *IoUringParams) i32 {
+    return syscallResult(linux.syscall3(.io_uring_setup, entries, @intFromPtr(params), 0));
 }
 
-fn io_uring_register(fd: i32, opcode: u32, arg: *const anyopaque, nr_args: u32) i32 {
-    return @intCast(linux.syscall4(SYS_io_uring_register, @intCast(fd), opcode, @intFromPtr(arg), nr_args));
+fn ioUringEnter(fd: i32, to_submit: u32, min_complete: u32, flags: u32) i32 {
+    return syscallResult(linux.syscall6(.io_uring_enter, @as(u64, @intCast(fd)), to_submit, min_complete, flags, 0, 0));
 }
 
-fn mmap_ring(size: usize, fd: i32) ?[*]u8 {
-    const addr = linux.mmap(null, size, linux.PROT_READ | linux.PROT_WRITE, linux.MAP_SHARED | linux.MAP_POPULATE, fd, 0);
-    if (addr == linux.MAP_FAILED) {
-        return null;
-    }
-    return @as([*]u8, @ptrCast(addr));
+fn ioUringRegister(fd: i32, opcode: u32, arg: *anyopaque, nr_args: u32) i32 {
+    return syscallResult(linux.syscall4(.io_uring_register, @as(u64, @intCast(fd)), opcode, @intFromPtr(arg), nr_args));
 }
 
 pub export fn iouring_init(
     ring: *IoUring,
     entries: u32,
-) i32 {
-    var params: linux.io_uring_params = undefined;
-    @memset(@as([*]u8, @ptrCast(&params))[0..@sizeOf(linux.io_uring_params)], 0);
+) callconv(.c) i32 {
+    var params: IoUringParams = undefined;
+    @memset(@as([*]u8, @ptrCast(&params))[0..@sizeOf(IoUringParams)], 0);
+    params.sq_entries = entries;
+    params.cq_entries = entries * 2;
 
-    const fd = io_uring_setup(entries, &params);
+    const fd = ioUringSetup(entries, &params);
     if (fd < 0) {
-        ring.* = IoUring{
-            .ring_fd = -1,
-            .ring_size = 0,
-            .mapped = false,
-        };
-        return fd;
-    }
-
-    const ring_size = params.sq_ring_bytes;
-    const mapped = mmap_ring(ring_size, fd);
-
-    if (mapped == null) {
-        _ = linux.close(fd);
         ring.* = IoUring{
             .ring_fd = -1,
             .ring_size = 0,
@@ -99,10 +93,35 @@ pub export fn iouring_init(
 
     ring.* = IoUring{
         .ring_fd = fd,
-        .ring_size = ring_size,
-        .mapped = true,
+        .ring_size = entries,
+        .mapped = false,
     };
     return 0;
+}
+
+fn submit_sqe(
+    ring_fd: i32,
+    opcode: u8,
+    fd: i32,
+    addr: u64,
+    len: usize,
+    offset: u64,
+    user_data: u64,
+) i32 {
+    var sqe: IoUringSqe = undefined;
+    @memset(@as([*]u8, @ptrCast(&sqe))[0..@sizeOf(IoUringSqe)], 0);
+    sqe.opcode = opcode;
+    sqe.fd = fd;
+    sqe.addr = addr;
+    sqe.len = @intCast(len);
+    sqe.off = offset;
+    sqe.user_data = user_data;
+
+    const sqe_ptr = @as([*]const u8, @ptrCast(&sqe));
+    const ret = linux.write(ring_fd, sqe_ptr, @sizeOf(IoUringSqe));
+    if (ret < 0) return -1;
+
+    return ioUringEnter(ring_fd, 1, 0, 0);
 }
 
 pub export fn iouring_submit_read(
@@ -110,26 +129,15 @@ pub export fn iouring_submit_read(
     fd: i32,
     buf: [*]u8,
     len: usize,
-    offset: u64,
+    offset: i64,
     user_data: u64,
-) i32 {
+) callconv(.c) i32 {
     if (ring_fd < 0) {
-        return -1;
+        const result = linux.pread(fd, buf, len, offset);
+        if (result < 0) return -1;
+        return 0;
     }
-
-    var sqe: linux.io_uring_sqe = undefined;
-    @memset(@as([*]u8, @ptrCast(&sqe))[0..@sizeOf(linux.io_uring_sqe)], 0);
-
-    sqe.opcode = IORING_OP_READV;
-    sqe.fd = fd;
-    sqe.addr = @intFromPtr(buf);
-    sqe.len = @intCast(len);
-    sqe.off = offset;
-    sqe.user_data = user_data;
-    sqe.flags = IOSQE_FIXED_FILE;
-
-    const submitted = io_uring_enter(ring_fd, 1, 0, IORING_ENTER_SQ_WAKEUP, null);
-    return @intCast(submitted);
+    return submit_sqe(ring_fd, IORING_OP_READ, fd, @intFromPtr(buf), len, @as(u64, @intCast(offset)), user_data);
 }
 
 pub export fn iouring_submit_write(
@@ -137,26 +145,15 @@ pub export fn iouring_submit_write(
     fd: i32,
     buf: [*]const u8,
     len: usize,
-    offset: u64,
+    offset: i64,
     user_data: u64,
-) i32 {
+) callconv(.c) i32 {
     if (ring_fd < 0) {
-        return -1;
+        const result = linux.pwrite(fd, buf, len, offset);
+        if (result < 0) return -1;
+        return 0;
     }
-
-    var sqe: linux.io_uring_sqe = undefined;
-    @memset(@as([*]u8, @ptrCast(&sqe))[0..@sizeOf(linux.io_uring_sqe)], 0);
-
-    sqe.opcode = IORING_OP_WRITEV;
-    sqe.fd = fd;
-    sqe.addr = @intFromPtr(buf);
-    sqe.len = @intCast(len);
-    sqe.off = offset;
-    sqe.user_data = user_data;
-    sqe.flags = IOSQE_FIXED_FILE;
-
-    const submitted = io_uring_enter(ring_fd, 1, 0, IORING_ENTER_SQ_WAKEUP, null);
-    return @intCast(submitted);
+    return submit_sqe(ring_fd, IORING_OP_WRITE, fd, @intFromPtr(buf), len, @as(u64, @intCast(offset)), user_data);
 }
 
 pub export fn iouring_submit_openat(
@@ -166,57 +163,74 @@ pub export fn iouring_submit_openat(
     flags: i32,
     mode: u32,
     user_data: u64,
-) i32 {
-    if (ring_fd < 0) {
-        return -1;
-    }
-
-    var sqe: linux.io_uring_sqe = undefined;
-    @memset(@as([*]u8, @ptrCast(&sqe))[0..@sizeOf(linux.io_uring_sqe)], 0);
-
+) callconv(.c) i32 {
+    var sqe: IoUringSqe = undefined;
+    @memset(@as([*]u8, @ptrCast(&sqe))[0..@sizeOf(IoUringSqe)], 0);
     sqe.opcode = IORING_OP_OPENAT;
     sqe.fd = dirfd;
     sqe.addr = @intFromPtr(path);
-    sqe.len = @intCast(flags);
-    sqe.off = @bitCast(@as(i64, @intCast(mode)));
+    sqe.len = mode;
+    sqe.off = @intCast(flags);
     sqe.user_data = user_data;
 
-    const submitted = io_uring_enter(ring_fd, 1, 0, IORING_ENTER_SQ_WAKEUP, null);
-    return @intCast(submitted);
+    const sqe_ptr = @as([*]const u8, @ptrCast(&sqe));
+    const ret = linux.write(ring_fd, sqe_ptr, @sizeOf(IoUringSqe));
+    if (ret < 0) return -1;
+
+    return ioUringEnter(ring_fd, 1, 0, 0);
 }
 
 pub export fn iouring_register_buffers(
     ring_fd: i32,
     buffers: *anyopaque,
     nr_buffers: u32,
-) i32 {
-    if (ring_fd < 0) {
-        return -1;
-    }
-
-    return io_uring_register(ring_fd, IORING_REGISTER_BUFFERS, buffers, nr_buffers);
+) callconv(.c) i32 {
+    return ioUringRegister(ring_fd, IORING_REGISTER_BUFFERS, buffers, nr_buffers);
 }
 
-pub export fn iouring_close(ring_fd: i32) i32 {
-    if (ring_fd >= 0) {
-        return linux.close(ring_fd);
-    }
+pub export fn iouring_close(ring_fd: i32) callconv(.c) i32 {
+    _ = linux.close(ring_fd);
     return 0;
 }
 
 pub export fn iouring_wait_cqes(
     ring_fd: i32,
     max_cqes: u32,
-) i32 {
-    if (ring_fd < 0) {
-        return -1;
-    }
+) callconv(.c) i32 {
+    return ioUringEnter(ring_fd, 0, max_cqes, 0);
+}
 
-    return io_uring_enter(ring_fd, 0, max_cqes, IORING_ENTER_GETEVENTS, null);
+pub export fn iouring_submit_and_wait(
+    ring_fd: i32,
+    to_submit: u32,
+    min_complete: u32,
+) callconv(.c) i32 {
+    return ioUringEnter(ring_fd, to_submit, min_complete, 0);
+}
+
+pub export fn iouring_peek_cqe(
+    ring_fd: i32,
+) callconv(.c) i32 {
+    return ioUringEnter(ring_fd, 0, 0, 0);
+}
+
+pub export fn iouring_get_sq_space(ring_fd: i32) callconv(.c) i32 {
+    _ = ring_fd;
+    return 0;
+}
+
+pub export fn iouring_enable_ring(ring_fd: i32) callconv(.c) i32 {
+    _ = ring_fd;
+    return 0;
+}
+
+pub export fn iouring_disable_ring(ring_fd: i32) callconv(.c) i32 {
+    _ = ring_fd;
+    return 0;
 }
 
 test "iouring_basic" {
     var ring: IoUring = undefined;
-    const result = iouring_init(&ring, 32, 0);
+    const result = iouring_init(&ring, 32);
     try std.testing.expect(result == 0 or result == -1);
 }

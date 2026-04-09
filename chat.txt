@@ -1,0 +1,117 @@
+Dưới đây là prompt chi tiết để bạn (hoặc một AI khác) có thể sinh code bổ sung cho **Phase 6 – System Intelligence Hub (SIH)** dựa trên những phần còn thiếu sau khi rà soát.
+
+---
+
+## Prompt: Hoàn thiện các thành phần còn thiếu của SIH (Phase 6)
+
+### Bối cảnh
+Dự án AIOS đã có code nền cho SIH module trong thư mục `rust/sih/`. Các file chính đã được tạo, bao gồm: supervisor, main, hardware collector, knowledge base, DKSS, API gateway, web scraper cơ bản. Tuy nhiên, theo thiết kế `thietkemoi.txt` (Phase 6), vẫn còn một số thành phần chưa được triển khai hoặc chưa đáp ứng đầy đủ yêu cầu.
+
+### Mục tiêu
+Bổ sung, sửa đổi các file sau để hoàn thiện SIH module, đảm bảo:
+- Đáp ứng các yêu cầu về **Web Scraper** (ưu tiên động, CAPTCHA, health reporter).
+- Mở rộng **DKSS** để nhận dữ liệu từ scraper.
+- Bổ sung **REST API endpoints** cho quản lý scraper.
+- Nâng cấp **PyO3 bindings** để xuất dữ liệu cho Python workers.
+- Sửa các test vi phạm quy tắc (dùng `unwrap`).
+
+### Danh sách công việc cụ thể
+
+#### 1. Tạo file `rust/sih/src/web_scraper/captcha_handler.rs`
+- **Mục tiêu**: Xử lý khi browser gặp CAPTCHA trong quá trình đăng nhập hoặc hỏi đáp.
+- **Yêu cầu**:
+  - Định nghĩa struct `CaptchaHandler` với các phương thức:
+    - `new() -> Self`
+    - `handle(platform: Platform, image_data: Option<Vec<u8>>) -> CaptchaState` (trả về `Pending`, `Solved`, `Failed`).
+    - `submit_solution(platform: Platform, solution: String) -> Result<()>`.
+  - Lưu trạng thái CAPTCHA đang chờ trong `DashMap<Platform, CaptchaState>`.
+  - Khi CAPTCHA xuất hiện >3 lần trong 1 giờ, tự động đặt platform vào cooldown (giảm base_priority tạm thời) và ghi log.
+  - Tích hợp với `BrowserController` (gọi qua FFI) để lấy ảnh CAPTCHA (nếu có).
+- **Tuân thủ**:
+  - Không dùng `unwrap`, `expect` (trừ khi có comment lý do bất khả kháng).
+  - Dùng `anyhow::Result` cho các hàm trả về `Result`.
+  - Dùng `DashMap` thay `Mutex<HashMap>`.
+  - Các hàm chưa thể implement đầy đủ (do thiếu FFI) phải dùng `unimplemented!` kèm TODO comment.
+
+#### 2. Tạo file `rust/sih/src/web_scraper/health.rs`
+- **Mục tiêu**: Định kỳ gửi health status của web scraper vào Health Tunnel.
+- **Yêu cầu**:
+  - Định nghĩa struct `ScraperHealthReporter` với phương thức `start(report_interval_secs: u64)` spawn một tokio task.
+  - Mỗi interval, đọc `PlatformStatsManager` và `PriorityEngine` để tính:
+    - Số câu hỏi thành công/thất bại trong khoảng thời gian.
+    - Platform đang trong cooldown.
+    - Điểm tin cậy trung bình.
+  - Đóng gói thành `HealthRecord` (theo định nghĩa trong `common::health_tunnel`) và gửi qua `HealthTunnel` (đã có trong `sih_main`).
+  - Sử dụng `ringbuf` để đệm nếu gửi bị chậm.
+- **Tuân thủ**: như trên.
+
+#### 3. Sửa file `rust/sih/src/api/gateway.rs`
+- **Mục tiêu**: Bổ sung các REST endpoint cho web scraper.
+- **Yêu cầu**:
+  - Thêm các route:
+    - `GET /api/web_scraper/priorities` → trả về danh sách platform với `base_priority` hiện tại.
+    - `POST /api/web_scraper/priorities` → nhận JSON `{ platform: string, base_priority: u32 }` để cập nhật.
+    - `POST /api/web_scraper/accounts` → nhận `{ platform, email, password }` (mã hóa trước khi lưu vào Child Tunnel).
+    - `GET /api/web_scraper/stats` → trả về success rate, latency, trust score từ `PlatformStatsManager`.
+    - `POST /api/web_scraper/2fa/{platform}` → nhận `{ code }` và gọi `TwoFAHandler::complete`.
+    - `POST /api/web_scraper/captcha/{platform}` → nhận `{ solution }` và gọi `CaptchaHandler::submit_solution`.
+  - Xác thực token qua `Authenticator` (đã có).
+  - Sử dụng `serde_json` để parse request/response.
+- **Tuân thủ**: không `unwrap`, dùng `anyhow::Result` trong handler, trả về `ApiResponse` chuẩn.
+
+#### 4. Sửa file `rust/sih/src/dkss/knowledge_ingestion.rs`
+- **Mục tiêu**: Mở rộng pipeline DKSS để nhận dữ liệu từ `QueryOrchestrator`.
+- **Yêu cầu**:
+  - Thêm phương thức `ingest_from_scraper(result: CollectedResult) -> Result<KnowledgeEntry>`.
+  - Trong đó:
+    - Gọi `privacy_filter.filter()` để ẩn danh nội dung.
+    - Gọi `content_validator.check_duplicate()` (dùng MinHash/LSH) để tránh trùng lặp.
+    - Gán `trust_score_initial = platform_stats.trust_score * result.quality_score`.
+    - Nếu validation đạt, lưu vào `knowledge_base` và cập nhật `PlatformStats` (tăng success_count, giảm nếu entry bị gỡ sau).
+  - Ghi log sự kiện ingestion vào `decision_history`.
+- **Tuân thủ**: như trên.
+
+#### 5. Sửa file `rust/sih/src/bindings.rs` (PyO3)
+- **Mục tiêu**: Xuất đầy đủ struct và hàm cho Python workers.
+- **Yêu cầu**:
+  - Xuất các struct: `HardwareMetrics`, `KnowledgeEntry`, `ProposalMetadata` (định nghĩa trong module tương ứng) với `#[pyclass]`.
+  - Xuất các hàm:
+    - `get_metrics_batch(start_timestamp: u64, end_timestamp: u64) -> Vec<HardwareMetrics>`
+    - `query_knowledge(query: &str, top_k: usize) -> Vec<KnowledgeEntry>`
+    - `evaluate_proposal(proposal_json: &str) -> f32`
+  - Sử dụng `pyo3` macros, xử lý lỗi bằng `PyResult`.
+  - Đảm bảo các hàm này gọi đúng logic từ các module SIH (có thể cần thêm phương thức trong `SihMain` hoặc `KnowledgeBase`).
+- **Tuân thủ**: không `unwrap`, dùng `?` trong Python wrapper.
+
+#### 6. Sửa các test file vi phạm quy tắc
+- **Các file cần sửa** (ví dụ):
+  - `rust/sih/tests/embedding_tests.rs`
+  - `rust/sih/tests/sih_ai_tests.rs`
+  - `rust/sih/tests/sih_knowledge_tests.rs`
+- **Yêu cầu**:
+  - Thay đổi chữ ký test function từ `fn test_...()` thành `fn test_...() -> anyhow::Result<()>`.
+  - Thay thế `.unwrap()` bằng `?` hoặc `.ok_or_else(|| anyhow!("..."))?`.
+  - Nếu cần kiểm tra lỗi, dùng `assert!(result.is_err())` hoặc `assert_matches!`.
+  - Xóa các `#[should_panic]` nếu có thể thay bằng kiểm tra `Result::Err`.
+
+### Quy tắc bắt buộc khi sinh code
+- **Không dùng `unwrap`, `expect`** (trừ comment đặc biệt).
+- **Không dùng `std::sync::Mutex` hay `parking_lot::Mutex`**; thay bằng `DashMap`, `ringbuf`, `crossbeam::channel`.
+- **Mọi `unsafe` phải có comment giải thích** và fuzz target (nếu có thể).
+- **Các hàm chưa implement đầy đủ do phụ thuộc phase sau** phải dùng `unimplemented!("TODO(Phase X): ...")`.
+- **Test function trả về `Result<(), anyhow::Error>`**, dùng `?`.
+- **Định dạng phản hồi** theo mẫu:
+  ```
+  [FILE PATH]: đường/dẫn/đến/file.xxx
+  [MỤC TIÊU]: mô tả ngắn
+  ```rust
+  // code
+  ```
+  Kết thúc bằng câu: "Code này có vấn đề gì không? Tôi sẽ tiếp tục với file tiếp theo."
+
+### Lưu ý
+- Nếu một struct/hàm cần dùng nhưng chưa có trong module hiện tại, hãy tạo stub (ví dụ trong `knowledge_base.rs` thêm phương thức `add_from_scraper`).
+- Tham khảo các file đã có để giữ phong cách code nhất quán (ví dụ cách dùng `anyhow`, `thiserror`, `tracing`).
+- Ưu tiên hoàn thành các file mới trước, sau đó sửa các file cũ.
+
+---

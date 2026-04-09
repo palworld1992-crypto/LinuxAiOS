@@ -27,10 +27,16 @@ impl WindowsPolicyEngine {
             kvm_memory_limit_mb: 4096,
             enable_hybrid_library: true,
         };
-        let config = fs::read_to_string("/etc/aios/windows_policy.json")
+        let config = match fs::read_to_string("/etc/aios/windows_policy.json")
             .ok()
             .and_then(|s| serde_json::from_str(&s).ok())
-            .unwrap_or(default);
+        {
+            Some(c) => c,
+            None => {
+                tracing::warn!("Failed to load policy config, using defaults");
+                default
+            }
+        };
         Self { config }
     }
 

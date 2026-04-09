@@ -1,0 +1,444 @@
+Dưới đây là bản mô tả hoạt động hệ thống AIOS đã được cập nhật và bổ sung, nhằm giúp AI hiểu đúng kiến trúc và viết code tuân thủ thiết kế mới (các phase 1-13). Bản này bao gồm đầy đủ các thành phần, cơ chế neuron, `SupervisorSupport`, kiểm thử phân tầng, và các quy tắc code bắt buộc.
+
+---
+## 0. NHỮNG ĐIỀU AI BẮT BUỘC PHẢI NHỚ (TRƯỚC KHI VIẾT CODE)
+- **Cấm `unwrap()` và `expect()` trong production** – dùng `?` hoặc xử lý lỗi.
+- **Cấm `#[allow]` / `#![allow]`** – sửa warning bằng code đúng.
+- **Cấm trả giá trị giả** (`Ok(())`, `vec![]`, `0`, `None`) – dùng `unimplemented!("TODO...")`.
+- **Cấm xóa code vì thiếu phụ thuộc** – giữ nguyên signature, dùng placeholder.
+- **Luôn implement `SupervisorSupport` cho mọi main** và tính `potential` mỗi giây.
+- **Dùng `DashMap`/`DashSet`/`ringbuf`/`evmap` thay SQLite trong luồng chính**.
++ Nếu dùng giá trị giả nhưng nó có logic hay implement thì phải comment chỗ đó.
+**Nguyên tắc chung:** Test code phải có chất lượng tương đương production, không được dùng các "lối tắt" làm che giấu lỗi môi trường hoặc logic.
+
+**Các hành vi bị cấm:**
+- **Cấm dùng `unwrap()` hoặc `expect()`** trong bất kỳ test function nào (unit test, integration test, doctest).
+- **Cấm viết test function không trả về `Result`** nếu có thể thất bại.
+- **Cấm dùng `#[should_panic]`** để kiểm tra lỗi có thể xử lý bằng `Result`.
+- **Cấm dùng `println!` để debug** trong test code (dùng `tracing` hoặc `eprintln!` nếu thực sự cần).
+
+**Quy chuẩn bắt buộc:**
+```rust
+// Đúng
+#[test]
+fn test_something() -> anyhow::Result<()> {
+    let result = fallible_operation()?;
+    assert_eq!(result, expected);
+    Ok(())
+}
+
+// Sai – cấm
+#[test]
+fn test_something() {
+    let result = fallible_operation().unwrap(); // cấm
+}
+****Mô tả về dùng vec!:
+1. Loại bỏ "Độ trễ không xác định" (Non-deterministic Latency)Cơ chế của Vec là Dynamic Reallocation: khi bạn .push() vượt quá capacity, nó phải yêu cầu Hệ điều hành cấp một vùng nhớ mới, copy toàn bộ dữ liệu cũ sang và giải phóng vùng nhớ cũ.Cải thiện: Dùng Array [T; N] hoặc ArrayVec giúp triệt tiêu hoàn toàn quá trình này.Kết quả: Thời gian thực thi lệnh là hằng số ($O(1)$), không bao giờ bị "spike" (tăng vọt độ trễ) bất ngờ — điều bắt buộc đối với Transport Tunnel khi xử lý gói tin <1μs.
+2. Tránh "Page Fault" trong Kernel-spaceVec lưu dữ liệu trên Heap. Trong lập trình hệ thống, bộ nhớ Heap có thể bị đẩy xuống ổ cứng (Swap) nếu RAM đầy. Khi bạn truy cập vào một Vec đã bị swap, CPU sẽ bị khựng lại để chờ nạp dữ liệu từ disk (Page Fault).Cải thiện: Dùng Array hoặc SmallVec (với ngưỡng nhỏ) sẽ giữ dữ liệu trên Stack.Kết quả: Dữ liệu luôn nằm trong bộ nhớ vật lý gần CPU nhất (L1/L2 Cache), đảm bảo các module như Interrupt Handler hay eBPF Router luôn phản hồi tức thì.
+3. Tối ưu hóa "Zero-copy" và Cache LocalityQuy tắc AIOS yêu cầu dùng ringbuf (SPSC) và memfd thay vì các cấu trúc dữ liệu chuẩn.Cơ chế Vec: Thường xuyên làm phân mảnh bộ nhớ (Fragmentation).Cải thiện: ringbuf sử dụng một vùng nhớ liên tục cố định.Kết quả: CPU không phải nhảy đi nhảy lại giữa các địa chỉ nhớ khác nhau (tăng Cache Hit rate). Điều này cực kỳ quan trọng khi bạn chạy các mô hình LNN/SNN đòi hỏi tốc độ xử lý telemetry theo thời gian thực.
+4. An toàn trong môi trường Đa luồng (Lock-free)Dùng Vec trong môi trường đa luồng thường đòi hỏi Mutex hoặc RwLock. AIOS cấm tuyệt đối điều này vì nó gây ra hiện tượng "tranh chấp khóa" (Lock contention).Cải thiện: DashMap hoặc evmap chia nhỏ dữ liệu thành các phân vùng (shards) để nhiều CPU ghi vào cùng lúc mà không đợi nhau.Kết quả: Tăng khả năng mở rộng (Scalability) của SIH Supervisor khi phải xử lý hàng ngàn proposal đồng thời.
+## 0a. Cấm tuyệt đối Mutex và RwLock trong production (BẮT BUỘC)
+
+**Nguyên tắc:** Hệ thống AIOS yêu cầu lock‑free ở mức tối đa để đảm bảo hiệu năng real‑time và tránh contention. Do đó:
+
+- **Cấm sử dụng `std::sync::Mutex`, `std::sync::RwLock`, `parking_lot::Mutex`, `parking_lot::RwLock`** trong bất kỳ code production nào (kể cả trong các module dùng `parking_lot` thay thế).
+- **Ngoại lệ:** Chỉ được phép dùng nếu có lý do bất khả kháng (ví dụ tương tác với thư viện C bắt buộc phải dùng lock), và phải được phê duyệt bởi maintainer, kèm comment giải thích rõ ràng trong code và trong tài liệu. Trong trường hợp đó, **bắt buộc** dùng `parking_lot::Mutex` (vì hiệu năng tốt hơn) và phải đặt trong module có feature flag `unsafe_allow_mutex`.
+
+**Các giải pháp thay thế bắt buộc:**
+
+| Mục đích | Giải pháp lock‑free được khuyến nghị |
+|----------|----------------------------------------|
+| Map chia sẻ (key‑value) | `DashMap` (từ crate `dashmap`) hoặc `evmap` (eventual consistency) |
+| Set chia sẻ | `DashSet` (từ `dashmap`) |
+| Hàng đợi SPSC | `ringbuf::HeapRb` hoặc `crossbeam::queue::ArrayQueue` |
+| Hàng đợi MPSC | `crossbeam::channel` (unbounded hoặc bounded) |
+| Hàng đợi MPMC | `crossbeam::queue::SegQueue` (unbounded) |
+| Biến trạng thái đơn (bool, số) | `AtomicBool`, `AtomicU32`, `AtomicPtr`, v.v. |
+| Bộ đệm vòng tròn | `ringbuf` (lock‑free SPSC) |
+| Bảng băm với sharding | `dashmap` (đã shard sẵn) |
+
+**Quy tắc kiểm tra tự động:**
+- Mọi crate `Cargo.toml` phải có lint `disallowed_types = "deny"` và file `clippy.toml` liệt kê:
+  ```toml
+  disallowed-types = [
+      "std::sync::Mutex",
+      "std::sync::RwLock",
+      "parking_lot::Mutex",
+      "parking_lot::RwLock"
+  ]
+
+
+
+
+# Prompt mô tả hoạt động hệ thống AIOS (dành cho AI sinh code)
+
+**Mục đích:** Cung cấp bản mô tả đầy đủ, chính xác, có cấu trúc về cách các module trong AIOS vận hành, để AI có thể hiểu đúng kiến trúc và viết code tuân thủ thiết kế. Dựa trên tài liệu `thietkemoi.txt` (các phase 1-13) và các quy tắc code.
+
+## 1. Tổng quan hệ thống AIOS
+
+AIOS là một hệ điều hành AI phân tán, bảo mật lượng tử, gồm **7 supervisor** tham gia đồng thuận toàn cục:
+- Linux Supervisor
+- Windows Supervisor
+- Android Supervisor
+- System Intelligence Hub (SIH) Supervisor
+- System Host Supervisor
+- Adaptive Supervisor
+- Browser Supervisor
+
+Mỗi supervisor quản lý một **module** (tương ứng). Mỗi module có cấu trúc:
+- **Supervisor** (Rust): quyết định chiến lược, tham gia đồng thuận, gửi proposal, đánh giá rủi ro.
+- **Main** (Rust/Zig/C++): quản lý tài nguyên nội bộ (memory tiering, executor, container, API), hỗ trợ supervisor khi bận thông qua trait `SupervisorSupport`.
+
+Các **tunnel** cung cấp dịch vụ lưu trữ và xác thực:
+- **Master Tunnel** (Rust + Ada): blockchain chính lưu khóa lượng tử của 7 supervisor, lịch sử thay đổi, model supervisor. Đồng thuận Raft (7 node).
+- **Child Tunnel** (Rust): blockchain nhẹ lưu khóa của assistant, executor, hybrid library (thời hạn 30 ngày, tự động gia hạn).
+- **Health Tunnel** (Rust): mỗi module có ledger dạng queue 3 snapshot (default, previous, current) lưu trạng thái `HealthRecord`.
+- **Health Master Tunnel** (Rust): lưu snapshot trạng thái của tất cả supervisor, dùng Raft đơn giản.
+- **Database Tunnel** (Rust): Merkle tree ghi root hash của thay đổi dữ liệu quan trọng (knowledge base, decision history, audit logs). Dữ liệu chi tiết lưu SQLite (HMAC), chỉ ghi block khi bất thường hoặc sau 10s.
+- **Transport Tunnel** (Rust + Zig): mã hóa kênh AES-256-GCM song song (rayon + SIMD), handshake Kyber/Dilithium, eBPF sockmap chuyển tiếp kernel‑side (<1μs), fallback user‑space.
+
+**Giao tiếp giữa các module chỉ qua Transport Tunnel** (AES-256-GCM + eBPF router) và được xác thực bằng token ký Dilithium.
+
+### Nguyên tắc cốt lõi (bắt buộc)
+1. **Tunnel chỉ xác thực danh tính và lưu dữ liệu quan trọng** (khóa, snapshot, root hash). **Không chứa logic vận hành hệ thống** (scheduling, memory tiering, routing, failover).
+2. **Mọi quyết định runtime do supervisor thực hiện**, dựa trên dữ liệu từ tunnel.
+3. **Main có thể hoạt động ở chế độ degraded** (khi supervisor lỗi) hoặc **supporting** (khi supervisor bận, theo trait `SupervisorSupport`).
+4. **SQLite chỉ dùng để lưu lịch sử (full history)**. Luồng chính dùng `DashMap`, `DashSet`, `ringbuf` (SPSC), `evmap`, `atomic` + `CachePadded`.
+5. **Cấm vô hiệu hóa warning** (không `#[allow]`, `#![allow]`, `pragma Warnings Off`, …). Mọi warning phải sửa bằng code đúng.
+6. **Cấm trả về giá trị giả** (`Ok(())`, `vec![]`, `0`, `None`) khi chưa implement. Phải dùng `unimplemented!("TODO(Phase X): lý do")`.
+7. **Cấm xóa code vì thiếu phụ thuộc**. Giữ nguyên signature, dùng placeholder `unimplemented!()` có TODO.
+**Nguyên tắc chung:** Test code phải có chất lượng tương đương production, không được dùng các "lối tắt" làm che giấu lỗi môi trường hoặc logic.
+
+  **Các hành vi bị cấm:**
++ - **Cấm `println!()` trong mọi code (kể cả test).** Dùng `tracing` (Rust) hoặc `std.log` (Zig).
++ - **Cấm `unwrap_or()`, `unwrap_or_else()`, `unwrap_or_default()` trong production.** Nếu cần giá trị mặc định, xử lý bằng `match` và ghi log.
+  - **Cấm dùng `unwrap()` hoặc `expect()`** trong bất kỳ test function nào (unit test, integration test, doctest).
+  - **Cấm viết test function không trả về `Result`** nếu có thể thất bại.
+  - **Cấm dùng `#[should_panic]`** để kiểm tra lỗi có thể xử lý bằng `Result`.
+- - **Cấm dùng `println!` để debug** trong test code (dùng `tracing` hoặc `eprintln!` nếu thực sự cần).
++ - **Cấm `eprintln!` trong production**; trong test chỉ được dùng khi thực sự cần và có comment.
+
+  **Quy chuẩn bắt buộc:**
+  ```rust
+  // Đúng
+  #[test]
+  fn test_something() -> anyhow::Result<()> {
+      let result = fallible_operation()?;
+      assert_eq!(result, expected);
+      Ok(())
+  }
+## 2. Các thành phần cốt lõi
+
+### 2.1. Secure Communication Core (SCC) – `rust/scc/` + `spark/`
+- **IDL Registry (Ada/SPARK)**: phân tích IDL, ánh xạ kiểu sang C layout, formal verification.
+- **Translation Engine (Rust)**: tạo shared memory descriptor (memfd) để zero-copy message.
+- **Intent Validator (Rust)**: kiểm tra token ký Dilithium, TTL ≤1s, policy từ Master Tunnel.
+- **Transport Bridge (Rust)**: giao tiếp Transport Tunnel, quản lý session key, đẩy luật eBPF.
+- **Crypto Engine (Ada)**: AES-256-GCM, HMAC-SHA256, Kyber-768, Dilithium (ML-DSA-65).
+- **KMS (Ada)**: sinh, lưu trữ khóa (kernel keyring/TPM), cấp khóa phiên cho module.
+- **Identity Manager (Ada)**: cấp token cho supervisor, xác thực danh tính.
+
+**Cách dùng:** Module gọi `scc::init_ada()` trước FFI Ada, sau đó dùng `ConnectionManager`.
+
+### 2.2. Master Tunnel – `rust/master_tunnel/`
+- Blockchain chính, đồng thuận Raft (7 node). Chỉ ghi block khi có thay đổi quan trọng.
+- Quản lý standby supervisor, cấp khóa mới khi failover.
+- API gRPC để module gửi proposal, đăng ký, lấy ledger.
+- **Luồng hoạt động:** Supervisor gửi proposal (ký Dilithium) → Master Tunnel broadcast đến 7 supervisor → mỗi supervisor gửi vote (risk level, reputation) → đủ quorum (5/7) → ghi block. Adaptive Interface hiển thị proposal, người dùng có 72h veto.
+
+### 2.3. Child Tunnel – `rust/child_tunnel/`
+- Blockchain nhẹ lưu khóa lượng tử của assistant, executor, hybrid library. Mỗi thành phần đăng ký khóa công khai, thời hạn 30 ngày, tự động gia hạn.
+
+### 2.4. Health Tunnel & Health Master Tunnel – `rust/health_tunnel/`, `rust/health_master_tunnel/`
+- Mỗi module có `HealthTunnel` riêng (ledger queue 3 snapshot: default, previous, current).
+- `HealthRecord` gồm: `module_id`, `timestamp`, `status` (Healthy/Degraded/Failed/Unknown/Supporting), `potential`, `details`.
+- Main ghi `record_health` mỗi giây (potential, status). `SnapshotManager` ghi metadata snapshot qua ring buffer, background thread ghi SQLite.
+
+### 2.5. Database Tunnel – `rust/database_tunnel/`
+- Merkle tree ghi root hash của thay đổi dữ liệu quan trọng (knowledge base, decision history, audit logs). Dữ liệu chi tiết lưu SQLite (HMAC). Chỉ ghi block khi bất thường hoặc sau 10s.
+
+### 2.6. Transport Tunnel – `rust/transport_tunnel/`
+- Mã hóa kênh AES-256-GCM song song (rayon + SIMD), nonce atomic.
+- Handshake Kyber/Dilithium → Ephemeral Master Secret → KDF sinh khóa phiên (xoay vòng 1 phút/1GB).
+- Hỗ trợ eBPF sockmap chuyển tiếp kernel‑side (độ trễ <1μs), fallback user‑space.
+- **Hebbian learning:** mỗi lần chuyển tiếp thành công, tăng weight của route (urgency≥200 tăng 2, còn lại tăng 1, max 255).
+- API: `encapsulate(peer_id, payload, aad) -> ciphertext`, `decapsulate(peer_id, data, aad) -> plaintext`.
+
+## 3. Mô tả chi tiết từng module
+
+### 3.1. Linux Module (`rust/linux_module/` + `zig/`)
+**Supervisor (`LinuxSupervisor`)**:
+- `global_decision_ai`: dùng model ONNX (candle) dự đoán tải CPU/RAM/GPU, quyết định chuyển module Active/Stub/Hibernated.
+- `risk_assessment_engine`: tổng hợp health từ 7 supervisor, tính risk level (Green/Yellow/Red), ký Dilithium, gửi Health Master Tunnel.
+- `consensus_client`: gửi proposal kèm risk level, reputation đến Master Tunnel.
+- `policy_engine`: đọc policy JSON, áp dụng giới hạn CPU/RAM/governor qua Zig cgroup.
+- `reputation_db`: DashMap + SQLite history, lưu điểm tin cậy từng supervisor.
+
+**Main (`LinuxMain`)**:
+- `memory_tiering_manager`: eBPF cold page detector (fallback mincore) phát hiện trang lạnh, nén zstd, lưu NVMe qua io_uring. Metadata lưu `DashSet`.
+- `userfault_handler`: xử lý page fault cho shared memory (Tensor Pool), đọc từ NVMe, giải nén, map lại.
+- `pinned_app_manager`: ghim process vào CPU cores qua Zig `cpu_pinning`.
+- `snapshot_integration`: tạo snapshot trước cập nhật model supervisor, rollback nếu health check lỗi.
+- `degraded_mode`: khi supervisor lỗi, main vẫn quản lý memory tiering nhưng không thay đổi governor, không chuyển module hibernated.
+- **Support:** implement `SupervisorSupport` để khi supervisor bận, main tạm thời đảm nhận memory tiering, health check, cgroups.
+
+**Assistant (`LinuxAssistant`)**:
+- `LNN predictor`: dự đoán workload spike (CPU, RAM, I/O) trong 5s tới, dùng SIMD.
+- `SNN processor`: nhận spike từ eBPF cold page detector, mô phỏng LIF neuron, quyết định page‑out ngay (<1μs).
+- `RL policy`: đề xuất action (page_out, prefetch, activate_module, hibernate_module) dựa trên state, confidence.
+
+**Zig components**:
+- `ebpf_loader`: load chương trình cold_page_detector, sockmap router.
+- `cgroup_manager`: tạo, set limit, freeze/thaw cgroup v2.
+- `iouring_wrapper`: submit read/write với registered buffers.
+- `criu`: checkpoint/restore process (cho hibernation).
+- `cpu_pinning`: set/get CPU affinity.
+- `preprocess_vector`: SIMD dot product, normalization.
+
+### 3.2. Windows Module (`rust/windows_module/`)
+**Supervisor**:
+- `translation_engine`: tra cache LRU (evmap) quyết định routing (hybrid library, Wine, KVM). Nếu API nóng (>1000 lần/s) → gửi yêu cầu JIT.
+- `hybrid_library_manager`: tải .so (Rust/C ABI), xác minh chữ ký Dilithium qua Child Tunnel, chạy process riêng với seccomp-bpf.
+- `jit_compiler`: sinh mã x86-64 (dynasm) cho API nóng, cache shared memory, xác minh an toàn.
+- `executor_orchestrator`: quản lý WineExecutor và KvmExecutor, fallback khi cần.
+- `anti_cheat_detector`: gửi tên game/hash đến SIH, nhận loại anti‑cheat (kernel/user), đề xuất fallback.
+
+**Main**:
+- `api_profiler`: ghi tần suất gọi API, latency, context vào ring buffer, gửi qua crossbeam channel.
+- `seccomp_filter`: thiết lập seccomp-bpf cho hybrid library process.
+- `kvm_fallback`: kiểm tra IOMMU, GPU passthrough → chọn VM mode (passthrough, virtio-gpu, software).
+- `ksm_manager`: kích hoạt KSM (kernel same-page merging) khi có VM chạy, giảm RAM.
+- `memory_tiering`: nhận lệnh từ Linux Module để live migrate VM cold pages xuống NVMe.
+- `poda` (Predictive On-Demand Activation): nhận dự đoán từ GDA, pre‑wake VM (CRIU) hoặc preload Wine, thời gian <1s.
+
+**Assistant**:
+- SLM (Phi‑3/TinyLlama) INT4 từ Tensor Pool, inference trên GPU (Vulkan/CUDA) hoặc CPU.
+- LNN dự đoán các API tiếp theo, gửi yêu cầu JIT ahead‑of‑time.
+- SNN xử lý spike từ VM (page fault, EPT violation), quyết định fallback hoặc discard cache.
+- RL policy đề xuất routing (hybrid library / Wine / KVM) dựa trên context.
+
+### 3.3. Android Module (`rust/android_module/`)
+**Supervisor**:
+- `container_manager`: quản lý container LXC (Anbox) hoặc Waydroid (systemd‑nspawn). Hỗ trợ freeze, hibernate (CRIU).
+- `executor_orchestrator`: chọn executor dựa trên khả năng phần cứng.
+- `hybrid_library_manager`: tải hybrid library thay thế libc, libbinder, sandbox seccomp.
+- `anti_malware_detector`: gửi APK hash đến SIH, nhận trust score (Allow/Warn/Block).
+
+**Main**:
+- `container_monitor`: giám sát tài nguyên container qua cgroups, gửi metrics vào ring buffer.
+- `seccomp_filter`: sandbox hybrid library process.
+- `degraded_mode`: khi supervisor lỗi, main vẫn chạy container hiện tại nhưng không tạo mới, không tải hybrid library mới.
+
+**Assistant**:
+- LNN dự đoán tải container, hỗ trợ quyết định freeze/thaw.
+- RL policy đề xuất thời điểm hibernate container.
+
+### 3.4. System Intelligence Hub (SIH) – `rust/sih/` + `python_workers/`
+**Supervisor**:
+- `hardware_collector`: đọc CPU, RAM, GPU, nhiệt độ mỗi 1s, ghi shared memory + ring buffer.
+- `knowledge_base`: SQLite + vector index (faiss/hnsw), embedding engine (candle DistilBERT). Metadata lưu DashMap.
+- `recommender_ai`: dùng model ONNX đề xuất cấu hình tối ưu, đánh giá độ an toàn proposal.
+- `dkss` (Distributed Knowledge Synthesis System): source_fetcher, trust_scoring, content_validator, privacy_filter, knowledge_ingestion.
+- `api_gateway`: gRPC/ZeroMQ API cho các module và Python workers.
+- web_scraper: module thu thập tri thức từ các nền tảng AI trực tuyến (DeepSeek, ChatGPT, Gemini) thông qua Browser Module (headless Chromium). Hoạt động hoàn toàn bằng browser, không dùng API chính thức. Hỗ trợ đăng nhập bằng email/mật khẩu (kể cả 2FA) và lưu session cookie mã hóa.
+- priority_engine: tính toán thứ tự ưu tiên động cho các platform dựa trên trust score lịch sử, độ trễ, tỷ lệ thành công, và ngưỡng cooldown. Công thức: effective_score = (1/base_priority) * (1 + trust_norm*weight_trust) * (1/(1+latency_norm*weight_latency)) * (1+success_norm*weight_success_rate). Mỗi câu hỏi được gửi tuần tự đến các platform theo thứ tự ưu tiên cho đến khi nhận được câu trả lời đạt chất lượng (quality ≥ 0.7).
+- query_orchestrator: điều phối toàn bộ quy trình hỏi‑đáp: sinh câu hỏi từ QueryGenerator (dùng SLM trên Tensor Pool), gửi lần lượt đến các platform qua BrowserController, đánh giá chất lượng câu trả lời bằng QualityAssessor (dùng SLM + heuristic), và gửi kết quả tốt nhất vào DKSS.
+- account_manager: quản lý tài khoản người dùng (email, mật khẩu) cho từng platform. Thông tin được mã hóa bằng khóa Dilithium của SIH và lưu trong Child Tunnel. Hỗ trợ xác thực 2FA (yêu cầu người dùng nhập OTP qua Adaptive Interface) và xử lý CAPTCHA (hiển thị ảnh để người dùng giải).
+- platform_stats: theo dõi các chỉ số hiệu năng cho từng platform (trust_score, success_count, failure_count, total_latency_ms, cooldown_until, captcha_count) dùng DashMap. Định kỳ ghi snapshot vào SQLite (lịch sử).
+**Main**:
+- `embedding_engine`: tạo embedding cho tri thức mới, đẩy vào ring buffer.
+- `decision_history`: lưu proposal đã qua (ID, kết quả, lý do, reputation) dùng DashMap + SQLite history.
+- web_scraper_scheduler: lên lịch thu thập dữ liệu, chỉ chạy khi potential > 0.6 và hệ thống không quá tải. Giữa các câu hỏi có random delay 5‑15s, giữa các phiên thu thập cho cùng platform chờ ít nhất 1 giờ. Tự động điều chỉnh tần suất dựa trên rate limit và cooldown.
+**Assistant**:
+- LNN dự đoán xu hướng câu hỏi, pre‑fetch embedding.
+- RL policy đề xuất trust threshold, ưu tiên nguồn tri thức.
+
+**Python workers (chạy on‑demand)**:
+- `global_decision_trainer.py`, `recommender_trainer.py`, `assistant_trainer.py`, `convert_to_int4.py`, `ab_testing.py`, `lnn_trainer.py`, `snn_trainer.py`, `rl_trainer.py`.
+- finetune_query_generator.py: fine‑tune SLM (Phi‑3/TinyLlama) trên tập câu hỏi – câu trả lời đã thu thập, nhằm sinh câu hỏi đa dạng, bám sát knowledge gap. Xuất model ONNX, chuyển sang INT4/GGUF, ký Dilithium và triển khai qua Model Manager.
+
+train_quality_assessor.py: huấn luyện mô hình nhẹ (MLP/DistilBERT) đánh giá chất lượng câu trả lời dựa trên độ dài, số code block, độ tương đồng. Thay thế hoặc bổ trợ cho SLM trong QualityAssessor để giảm độ trễ.
+
+learn_dom_structure.py: phân tích HTML từ các platform, tự động sinh selector (XPath/CSS) cho ResponseParser, giảm bảo trì thủ công khi giao diện thay đổi.
+
+detect_knowledge_gap.py: phân tích các câu hỏi đã hỏi và câu trả lời thu được, phát hiện chủ đề còn thiếu hoặc trả lời kém chất lượng, tạo báo cáo gửi SIH để điều chỉnh ưu tiên thu thập.
+
+Cơ chế kích hoạt: SIH gọi System Host qua gRPC (start_scraper_worker) khi có đủ dữ liệu mới (ví dụ 1000 câu trả lời) hoặc theo lịch định kỳ (tuần). Worker chạy trong môi trường riêng, không ảnh hưởng core system.
+
+
+### 3.5. System Host (`rust/system_host/`)
+**Supervisor**:
+- `policy_engine`: đọc policy JSON từ Master Tunnel, xác định giới hạn CPU, RAM cho module.
+- `model_manager`: quản lý model ONNX (global_decision_ai, recommender_ai), xác minh chữ ký Dilithium.
+- `download_manager`: tải file từ HTTPS/IPFS, kiểm tra SHA‑256.
+- `worker_manager`: gRPC client kết nối Python workers.
+
+**Main**:
+- `health_checker`: 3 lớp health check (heartbeat, hash integrity, quantum‑health). Kết quả lưu DashMap.
+- `failover_manager`: khi phát hiện supervisor mất heartbeat (3 lần), gửi yêu cầu đến 6 supervisor còn lại. Nếu ≥4 đồng ý (quorum), kích hoạt standby.
+- `micro_scheduler`: gọi Zig `cpu_pinning` để set CPU affinity dựa trên policy.
+- `emergency_channel`: Unix socket `/run/aios/emergency.sock` (xác thực SO_PEERCRED) dùng khi SCC không khả dụng.
+- `watchdog`: thread riêng, nếu không nhận `feed()` trong 5s → kill và restart System Host.
+- `module_activator`: gửi lệnh qua Transport Tunnel để kích hoạt module từ Stub sang Active.
+
+**Support monitor** (`support_monitor.rs`):
+- Định kỳ (5s) đọc Health Tunnel, phát hiện main đang Supporting quá thời gian (5 phút) hoặc lỗi → gửi `force_stop_support`.
+
+**Assistant**:
+- SNN xử lý interrupt từ hardware (timer, network) qua eBPF, đưa ra quyết định CPU pinning tức thời.
+- RL policy đề xuất failover timeout, điều kiện kích hoạt standby.
+
+### 3.6. Adaptive Interface Module (`rust/adaptive_backend/` + `adaptive_frontend/` React)
+**Supervisor**:
+- `approval_manager`: quản lý proposal model supervisor, hiển thị trên dashboard, đếm ngược 72h, ghi nhận veto.
+- `mode_selector`: chuyển đổi execution mode (Performance, Balanced, Secure) → gửi lệnh đến Linux Supervisor.
+- `failover_trigger`: kích hoạt failover thủ công.
+- `notification_broadcaster`: đẩy thông báo qua WebSocket (dùng ring buffer).
+
+**Main**:
+- `rest_api` (axum): endpoints `/api/health`, `/api/proposals`, `/api/proposals/{id}/approve`, `/api/mode`, `/api/failover/{module}`, `/api/logs`.
+- `auth_middleware`: xác thực JWT token từ Master Tunnel.
+- `state_cache`: lưu trạng thái module, proposal, mode dùng DashMap, cập nhật từ Health Tunnel.
+- `degraded_mode`: khi supervisor lỗi, backend vẫn phục vụ GET endpoints nhưng POST trả về 503.
+
+**Frontend (React + TypeScript)**:
+- Dashboard: health status, CPU/RAM usage, trạng thái module.
+- ProposalPanel: danh sách proposal, countdown, nút Approve/Reject.
+- ModeSelector: dropdown 3 chế độ.
+- FailoverButton: kích hoạt failover cho module (chỉ admin).
+- LogViewer: xem audit logs.
+- `useWebSocket`: quản lý kết nối WebSocket, tự động reconnect.
+
+### 3.7. Browser Module (`browser_module/` C++ + `rust/browser_ffi/`)
+**Supervisor (Rust)**:
+- `heartbeat_sender`: gửi heartbeat 5s/lần qua Transport Tunnel.
+- `command_handler`: nhận lệnh discard_tab, set_memory_limit từ Linux Supervisor, gọi FFI C++.
+- `potential`: tính potential mỗi giây, gọi `browser_update_potential` để C++ điều chỉnh discard policy.
+
+**Main (C++ Chromium)**:
+- Chromium patch: `--renderer-process-limit=4`, bật BackForwardCache.
+- `tab_manager`: quản lý tab, discard tab không hoạt động sau 30 phút (nếu supervisor lỗi) hoặc dựa trên potential.
+- `memory_monitor`: đọc RSS mỗi 10s, nếu vượt ngưỡng (800MB) và supervisor còn hoạt động → gọi `browser_memory_alert()`.
+- FFI functions (C++ gọi Rust): `browser_send_heartbeat`, `browser_memory_alert`, `browser_receive_command`, `browser_update_potential`.
+
+**Degraded mode**: Khi supervisor lỗi (3 heartbeat missed), System Host gửi SIGUSR1 → Browser Main tự discard tab không hoạt động sau 30 phút, không gửi heartbeat, không nhận lệnh mới.
+
+## 4. Cơ chế neuron và điện thế màng (potential)
+
+**Công thức chung (áp dụng cho mọi main):**
+```
+potential = health_score * 0.4 + (1 - (cpu + ram)/2) * 0.3 + norm_signal * 0.3
+```
+Trong đó:
+- `health_score`: 0.9 nếu bình thường, 0.3 nếu degraded mode.
+- `cpu`, `ram`: giá trị trong khoảng [0,1].
+- `norm_signal`: tín hiệu từ assistant hoặc supervisor (0-1).
+
+**Hành vi:**
+- Mỗi giây, main tính potential và ghi `HealthRecord` vào Health Tunnel.
+- Nếu `potential < 0.2` và không có lệnh từ supervisor (main đang ở chế độ tự chủ), main tự chuyển sang trạng thái Hibernated (tạo snapshot, giải phóng tài nguyên).
+- Khi potential tăng trở lại (do người dùng tương tác), supervisor gửi lệnh wakeup → main khôi phục snapshot.
+
+**Các cơ chế neuron khác:**
+- **LNN (Liquid Time-Constant Network)**: dự đoán spike (tải đột biến) dựa trên telemetry, dùng ODE Euler, SIMD.
+- **SNN (Spiking Neural Network)**: LIF neuron, nhận spike từ eBPF, quyết định page‑out, fallback, discard.
+- **RL policy**: PPO, đề xuất action (page_out, prefetch, hibernate, routing) kèm confidence.
+- **Hebbian learning** trong eBPF router: tự động tăng weight của route khi chuyển tiếp thành công.
+
+**Lưu ý khi viết code liên quan đến neuron:**
+- Các predictor (LNN, SNN) phải dùng **ring buffer SPSC** để nhận dữ liệu đầu vào (telemetry, spike).
+- RL policy network được load từ **Tensor Pool** (INT4/GGUF), inference bằng `candle`.
+- Potential được tính và ghi vào Health Tunnel qua `record_health`.
+
+## 5. Quy tắc viết code bắt buộc (tóm tắt từ `quytrinhsualoi.txt` và `thietkemoi.txt`)
+
+### 5.1. Rust
+ - Cấm `unwrap()`, `expect()` trong production. Dùng `?`, `.ok_or()?`, hoặc xử lý lỗi.
++ - Cấm `unwrap_or()`, `unwrap_or_else()`, `unwrap_or_default()` trong production. Xử lý tường minh bằng `match`.
++ - Cấm `println!()`, `eprintln!()` trong production. Dùng `tracing` crate.
+  - `unsafe` phải có comment giải thích lý do và các invariants đảm bảo an toàn.
+  - Cấm `#[allow(...)]`, `#![allow(...)]` (trừ ngoại lệ đã phê duyệt và ghi rõ comment). Mọi warning phải sửa bằng code đúng.
+  - Cấm trả về giá trị giả (`Ok(())`, `vec![]`, `0`, `None`) khi chưa implement. Thay bằng `unimplemented!("TODO(Phase X): lý do")`.
+  - Cấm xóa code vì thiếu phụ thuộc. Giữ nguyên signature, dùng `unimplemented!()` có TODO.
++ - Cấm dùng `Mutex<HashMap>` hoặc `RwLock<HashMap>` trong production. Dùng `DashMap`, `evmap` hoặc `ringbuf`.
+  - FFI: bọc `catch_unwind` khi gọi từ Rust sang C/C++/Ada.
+### 5.2. Zig (0.16+)
+- Cấm `@compileError` để bỏ qua warning. Sửa theo cú pháp đúng.
+- Cấm `@panic` trừ khi lỗi fatal không thể phục hồi.
+- Dùng `pub export fn` cho hàm xuất C, `callconv(.C)`.
+- Build với `-Doptimize=ReleaseFast`.
+
+### 5.3. Ada/SPARK (SPARK 2026)
+- Cấm `pragma Warnings (Off)`, `pragma Suppress`. Nếu cần tắt SPARK_Mode cho phần thân, phải có comment giải thích lý do.
+- Xuất C API bắt buộc là **procedure** (không function). Có `with Export, Convention => C, External_Name => ...` và khối `Depends`.
+- Formal verification: chạy `sparkprove` không lỗi.
+
+### 5.4. C++
+- Cấm `#pragma warning(disable: ...)` trong file gốc. Nếu cần do thư viện bên thứ ba, đặt trong `#ifdef` có comment giải thích.
+- Dùng smart pointers, không RTTI, không exception (dùng `std::optional` cho lỗi).
+- Đối với web scraper: Tuyệt đối không gọi REST API của OpenAI, Google, DeepSeek. Chỉ tương tác qua Browser Module headless với hành vi mô phỏng người dùng. Cookie và session phải được mã hóa trước khi lưu (dùng khóa Dilithium của SIH). Mật khẩu chỉ giải mã trong RAM, dùng xong xóa bằng zeroize. Khi gặp CAPTCHA hoặc 2FA, bắt buộc thông báo qua Adaptive Interface để người dùng can thiệp, không tự động thử lại mù quáng.
+
+
+### 5.5. Chung
+- Mọi thành phần quan trọng implement `HealthCheck` trait (Rust) hoặc tương đương.
+- Ghi log có cấu trúc bằng crate `tracing` (Rust), `std.log` (Zig).
+- Kiểm thử: unit test (coverage ≥80%), fuzzing cho unsafe, formal verification cho Ada.
+
+### 5.6. Quy tắc cho test (bắt buộc)
+
+- **Cấm `unwrap()`, `expect()` trong test** (unit test, integration test, doctest).
+- **Mọi test function phải trả về `Result<(), anyhow::Error>`** và dùng `?` để xử lý lỗi.
+- **Dùng `assert!()`, `assert_eq!()` để kiểm tra**, không dùng `#[should_panic]` cho lỗi có thể xử lý.
+- **Ví dụ đúng:**
+  ```rust
+  #[test]
+  fn test_tunnel() -> anyhow::Result<()> {
+      let tunnel = TransportTunnel::new()?;
+      assert!(tunnel.is_ready());
+      Ok(())
+  }
+## 6. Yêu cầu về an toàn và hiệu năng
+- Mật mã lượng tử: Kyber-768 cho KEM, ML-DSA-65 cho chữ ký, AES-256-GCM cho kênh.
+- eBPF: phải vượt qua verifier, nếu không thì fallback user‑space.
+- Shared memory: dùng `memfd_create` với `MFD_NOEXEC_SEAL`, `MADV_DONTFORK`, `MADV_COLD`.
+- Zero-copy: dùng `memmap2`, ring buffer atomic, io_uring registered buffers.
+- Parallel crypto: `rayon` + SIMD (crate `aes`/`ctr` với feature `simd`).
+- Release profile: `lto = "fat"`, `codegen-units = 1`, `panic = "abort"`, `strip = true`.
+
+## 7. Cơ chế SupervisorSupport và support_monitor (quan trọng)
+
+**Trait `SupervisorSupport` (Rust) được implement bởi mọi main component.**
+- Các phương thức: `is_supervisor_busy()`, `take_over_operations(context)`, `delegate_back_operations()`, `support_status()`.
+- Khi supervisor bận (CPU >80%, số proposal chờ >5), nó gọi `take_over_operations` trên main.
+- Main chuyển sang trạng thái `Supporting`, ghi `SupportStarted` vào Health Tunnel.
+- Main thực hiện các tác vụ được ủy quyền (memory tiering, health check, API phục vụ đọc) nhưng **không tham gia đồng thuận, không thay đổi khóa, không tải hybrid library mới**.
+- Khi supervisor hết bận, gọi `delegate_back_operations`. Main trở về `Idle`, ghi `SupportEnded`.
+- **System Host** có module `support_monitor`: đọc Health Tunnel định kỳ (5s), nếu phát hiện main hỗ trợ quá thời gian cấu hình (mặc định 5 phút) hoặc có lỗi, gửi `force_stop_support` qua Transport Tunnel. Main dừng hỗ trợ và chuyển sang degraded mode nếu cần.
+
+## 8. Kiểm thử phân tầng (Phase 13)
+
+Để đảm bảo chất lượng, hệ thống có 3 tầng kiểm thử:
+
+1. **Tầng 1 – Local Code Test (Mock)**: Chạy trên máy developer, không cần root. Mock các FFI (Zig, Ada, kernel) bằng feature flag `mock`. Kiểm tra logic thuần túy (LNN, RL, snapshot, consensus logic, `SupervisorSupport`). Dùng `loom` để kiểm tra race condition trong `DashMap`, `ringbuf`, `evmap`.
+Mock BrowserController, kiểm tra PriorityEngine, QueryOrchestrator, QualityAssessor. Dùng loom kiểm tra race condition trong PlatformStats (DashMap).
+2. **Tầng 2 – Root Integration Test**: Chạy với quyền root trên máy thật hoặc VM. Kiểm tra eBPF cold page detector, cgroup, io_uring, CPU pinning, Transport Tunnel thực tế.
+Chạy headless Chromium thật kết nối đến trang web giả lập (dùng mock-oauth2-server), kiểm tra luồng đăng nhập, gửi câu hỏi, parse phản hồi, xử lý CAPTCHA giả. Yêu cầu có Docker để chạy mock server.
+3. **Tầng 3 – Cluster Test**: Dùng QEMU hoặc Docker Compose mô phỏng 7 node supervisor. Kiểm tra đồng thuận Raft, failover, network partition, hiệu năng tổng thể.
+Trong cluster, kiểm tra SIH có thể thu thập dữ liệu từ nhiều platform đồng thời mà không ảnh hưởng đến đồng thuận và failover.
+
+
+**Quy tắc:** Mọi thay đổi code phải pass tầng 1. Các PR chính phải pass tầng 2. Tầng 3 chạy hàng đêm.
+
+## 9. Hướng dẫn cho AI khi sinh code
+
+- **Trước khi viết code**, xác định module, ngôn ngữ, vị trí file. Nếu thiếu thông tin, hỏi lại người dùng.
+- **Tuân thủ nghiêm ngặt các quy tắc code** (cấm allow, cấm giá trị giả, cấm xóa code, placeholder `unimplemented!`).
+- **Sử dụng đúng cấu trúc dữ liệu**: `DashMap`/`DashSet` thay `RwLock<HashMap>`, `ringbuf` SPSC cho hàng đợi, `evmap` cho eventual consistency, `CachePadded<AtomicUsize>` cho reference count.
+- **Ghi nhớ nguyên tắc tunnel**: không đưa logic vận hành vào tunnel. Mọi quyết định runtime phải ở supervisor hoặc main.
+- **Khi implement main**, phải implement `SupervisorSupport` và tính `potential` mỗi giây ghi vào Health Tunnel.
+- **Khi implement FFI** (Rust ↔ Zig/Ada/C++), bọc `catch_unwind` và comment unsafe.
+- **Luôn kèm unit test** (coverage ≥80%) và fuzzing nếu có `unsafe`.
+
+---
+
+Bản mô tả này là nguồn tham chiếu chính để AI hiểu cách AIOS vận hành. Nếu có điểm chưa rõ, AI phải hỏi lại người dùng trước khi sinh code.

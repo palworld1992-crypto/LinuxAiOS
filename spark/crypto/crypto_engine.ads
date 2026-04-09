@@ -1,4 +1,3 @@
-pragma Style_Checks (Off);
 with Interfaces.C;
 with System;
 
@@ -25,103 +24,81 @@ package Crypto_Engine with SPARK_Mode => On is
    subtype Key_4032 is Interfaces.C.char_array (0 .. 4031);
    subtype Key_3309 is Interfaces.C.char_array (0 .. 3308);
 
-   --------------------------------------------------------------------
-   -- AES-GCM 256
-   --------------------------------------------------------------------
-   procedure AES_GCM_Encrypt
-     (Key            : Key_32;
-      Plaintext      : System.Address;
-      Plaintext_Len  : Interfaces.C.size_t;
-      AAD            : System.Address;
-      AAD_Len        : Interfaces.C.size_t;
-      Ciphertext_Out : out System.Address;
-      Ciphertext_Len : out Interfaces.C.size_t;
-      Status         : out Interfaces.C.int)
-     with Depends => (Status => (Key, Plaintext, Plaintext_Len, AAD, AAD_Len),
-                      Ciphertext_Out => (Key, Plaintext, Plaintext_Len, AAD, AAD_Len),
-                      Ciphertext_Len => (Key, Plaintext, Plaintext_Len, AAD, AAD_Len));
+    --------------------------------------------------------------------
+    -- AES-GCM 256
+    -- FIX: Caller cấp phát output buffer, tránh cross-library free
+    -- Max output = plaintext_len + 16 (tag)
+    --------------------------------------------------------------------
+    procedure AES_GCM_Encrypt
+      (Key             : Key_32;
+       Plaintext       : System.Address;
+       Plaintext_Len   : Interfaces.C.size_t;
+       AAD             : System.Address;
+       AAD_Len         : Interfaces.C.size_t;
+       Ciphertext_Buf  : System.Address;
+       Ciphertext_Buf_Size : Interfaces.C.size_t;
+       Ciphertext_Len  : out Interfaces.C.size_t;
+       Status          : out Interfaces.C.int)
+      with Export,
+           Convention => C,
+           External_Name => "crypto_engine__aes_gcm_encrypt",
+           Depends => (Status => (Key, Plaintext, Plaintext_Len, AAD, AAD_Len, Ciphertext_Buf, Ciphertext_Buf_Size),
+                       Ciphertext_Len => (Key, Plaintext, Plaintext_Len, AAD, AAD_Len));
 
-   procedure AES_GCM_Decrypt
-     (Key            : Key_32;
-      Ciphertext     : System.Address;
-      Ciphertext_Len : Interfaces.C.size_t;
-      AAD            : System.Address;
-      AAD_Len        : Interfaces.C.size_t;
-      Plaintext_Out  : out System.Address;
-      Plaintext_Len  : out Interfaces.C.size_t;
-      Status         : out Interfaces.C.int)
-     with Depends => (Status => (Key, Ciphertext, Ciphertext_Len, AAD, AAD_Len),
-                      Plaintext_Out => (Key, Ciphertext, Ciphertext_Len, AAD, AAD_Len),
-                      Plaintext_Len => (Key, Ciphertext, Ciphertext_Len, AAD, AAD_Len));
+    procedure AES_GCM_Decrypt
+      (Key             : Key_32;
+       Ciphertext      : System.Address;
+       Ciphertext_Len  : Interfaces.C.size_t;
+       AAD             : System.Address;
+       AAD_Len         : Interfaces.C.size_t;
+       Plaintext_Buf   : System.Address;
+       Plaintext_Buf_Size : Interfaces.C.size_t;
+       Plaintext_Len   : out Interfaces.C.size_t;
+       Status          : out Interfaces.C.int)
+      with Export,
+           Convention => C,
+           External_Name => "crypto_engine__aes_gcm_decrypt",
+           Depends => (Status => (Key, Ciphertext, Ciphertext_Len, AAD, AAD_Len, Plaintext_Buf, Plaintext_Buf_Size),
+                       Plaintext_Len => (Key, Ciphertext, Ciphertext_Len, AAD, AAD_Len));
 
-   --------------------------------------------------------------------
-   -- HMAC-SHA256
-   --------------------------------------------------------------------
-   procedure HMAC_SHA256
-     (Key      : Key_32;
-      Data     : System.Address;
-      Data_Len : Interfaces.C.size_t;
-      MAC_Out  : out Key_32;
-      Status   : out Interfaces.C.int)
-     with Depends => (Status => (Key, Data, Data_Len),
-                      MAC_Out => (Key, Data, Data_Len));
+    --------------------------------------------------------------------
+    -- Post-Quantum Signature (Dilithium3)
+    -- FIX: Caller cấp phát signature buffer, tránh cross-library free
+    -- FIX: Use System.Address for keys to avoid copy on pass
+    -- FIX: External_Name thống nhất prefix crypto_engine__ như Kyber/HMAC/AES
+    --------------------------------------------------------------------
+     procedure Dilithium_Keypair
+       (Public_Key  : System.Address;
+        Secret_Key  : System.Address;
+        Status      : out Interfaces.C.int)
+       with Export,
+            Convention => C,
+            External_Name => "crypto_engine__dilithium_keypair",
+            Depends => (Status => (Public_Key, Secret_Key));
 
-   --------------------------------------------------------------------
-   -- Post-Quantum KEM (Kyber-768)
-   --------------------------------------------------------------------
-   procedure Kyber_Keypair
-     (Public_Key : out Key_1568;
-      Secret_Key : out Key_2400;
-      Status     : out Interfaces.C.int)
-     with Depends => (Status | Public_Key | Secret_Key => null);
+     procedure Dilithium_Sign
+       (Secret_Key     : System.Address;
+        Message        : System.Address;
+        Message_Len    : Interfaces.C.size_t;
+        Signature_Buf  : System.Address;
+        Signature_Buf_Size : Interfaces.C.size_t;
+        Signature_Len_Ptr : System.Address;  -- Address of size_t
+        Status         : out Interfaces.C.int)
+       with Export,
+            Convention => C,
+            External_Name => "crypto_engine__dilithium_sign",
+            Depends => (Status => (Secret_Key, Message, Message_Len, Signature_Buf, Signature_Buf_Size, Signature_Len_Ptr));
 
-   procedure Kyber_Encaps
-     (Public_Key    : Key_1568;
-      Ciphertext    : out Key_1312;
-      Shared_Secret : out Key_32;
-      Status        : out Interfaces.C.int)
-     with Depends => (Status => Public_Key,
-                      Ciphertext => Public_Key,
-                      Shared_Secret => Public_Key);
+     procedure Dilithium_Verify
+       (Public_Key   : System.Address;
+        Message      : System.Address;
+        Message_Len  : Interfaces.C.size_t;
+        Signature    : System.Address;
+        Signature_Len : Interfaces.C.size_t;
+        Status_Ptr   : System.Address)  -- Changed to Address for proper C ABI
+       with Export,
+            Convention => C,
+            External_Name => "crypto_engine__dilithium_verify",
+            Depends => (null => (Public_Key, Message, Message_Len, Signature, Signature_Len, Status_Ptr));
 
-   procedure Kyber_Decaps
-     (Secret_Key    : Key_2400;
-      Ciphertext    : Key_1312;
-      Shared_Secret : out Key_32;
-      Status        : out Interfaces.C.int)
-     with Depends => (Status => (Secret_Key, Ciphertext),
-                      Shared_Secret => (Secret_Key, Ciphertext));
-
-   --------------------------------------------------------------------
-   -- Post-Quantum Signature (Dilithium3)
-   --------------------------------------------------------------------
-   procedure Dilithium_Keypair 
-     (Public_Key : out Key_1952; 
-      Secret_Key : out Key_4032;
-      Status     : out Interfaces.C.int)
-     with Depends => (Status | Public_Key | Secret_Key => null);
-
-   procedure Dilithium_Sign
-     (Secret_Key   : Key_4032;
-      Message      : System.Address;
-      Message_Len  : Interfaces.C.size_t;
-      Signature    : out Key_3309;
-      Status       : out Interfaces.C.int)
-     with Depends => (Status => (Secret_Key, Message, Message_Len),
-                      Signature => (Secret_Key, Message, Message_Len));
-
-   procedure Dilithium_Verify
-     (Public_Key   : Key_1952;
-      Message      : System.Address;
-      Message_Len  : Interfaces.C.size_t;
-      Signature    : Key_3309;
-      Status       : out Interfaces.C.int)
-     with Depends => (Status => (Public_Key, Message, Message_Len, Signature));
-
-   -- Giải phóng bộ nhớ heap được cấp phát bên phía C
-   procedure Crypto_Free_Buffer (Ptr : System.Address)
-     with Depends => (null => Ptr);
-
-private
-    
-end Crypto_Engine;
+ end Crypto_Engine;

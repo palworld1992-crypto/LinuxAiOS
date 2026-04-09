@@ -222,6 +222,6 @@ mod tests {
     #[test]
     fn test_wine_bindings_default() {
         let bindings = WineBindings::new();
-        assert!(!bindings.check_wine_available().unwrap_or(false));
+        assert!(!bindings.check_wine_available().map_or(false, |v| v));
     }
 }

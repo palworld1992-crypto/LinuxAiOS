@@ -2,8 +2,6 @@
 
 use dashmap::DashMap;
 use libloading::Library;
-use parking_lot::RwLock;
-use std::collections::HashMap;
 use std::sync::atomic::{AtomicBool, AtomicU64, Ordering};
 use thiserror::Error;
 use tracing::info;
@@ -29,8 +27,8 @@ pub struct HybridLibrary {
 
 pub struct WindowsHybridManager {
     libraries: DashMap<u32, HybridLibrary>,
-    loaded_libs: RwLock<HashMap<u32, Library>>,
-    _seccomp_enabled: RwLock<bool>,
+    loaded_libs: DashMap<u32, Library>,
+    _seccomp_enabled: AtomicBool,
     next_id: AtomicU64,
 }
 
@@ -38,8 +36,8 @@ impl WindowsHybridManager {
     pub fn new() -> Self {
         Self {
             libraries: DashMap::new(),
-            loaded_libs: RwLock::new(HashMap::new()),
-            _seccomp_enabled: RwLock::new(true),
+            loaded_libs: DashMap::new(),
+            _seccomp_enabled: AtomicBool::new(true),
             next_id: AtomicU64::new(1),
         }
     }
@@ -49,10 +47,6 @@ impl WindowsHybridManager {
             info!("Verifying signature for library: {}", path);
         }
 
-        // SAFETY: `path` is a caller-supplied path to a shared library. The caller is
-        // responsible for ensuring the library is trusted (verify_signature checks this),
-        // that it does not execute arbitrary code on dlopen, and that the resulting
-        // Library is used only while the path is valid and the lib is loaded in memory.
         let lib = unsafe { Library::new(path).map_err(|e| HybridError::LoadError(e.to_string()))? };
 
         let id = self.next_id.fetch_add(1, Ordering::Relaxed) as u32;
@@ -64,7 +58,7 @@ impl WindowsHybridManager {
         };
 
         self.libraries.insert(id, library);
-        self.loaded_libs.write().insert(id, lib);
+        self.loaded_libs.insert(id, lib);
 
         info!("Loaded hybrid library {} from {}", id, path);
         Ok(id)
@@ -72,7 +66,7 @@ impl WindowsHybridManager {
 
     pub fn unload_library(&self, id: u32) -> Result<(), HybridError> {
         if self.libraries.remove(&id).is_some() {
-            self.loaded_libs.write().remove(&id);
+            self.loaded_libs.remove(&id);
             info!("Unloaded hybrid library {}", id);
             Ok(())
         } else {
@@ -103,8 +97,7 @@ impl WindowsHybridManager {
     fn current_timestamp() -> u64 {
         std::time::SystemTime::now()
             .duration_since(std::time::UNIX_EPOCH)
-            .map(|d| d.as_millis() as u64)
-            .unwrap_or(0)
+            .map_or(0, |d| d.as_millis() as u64)
     }
 }
 
@@ -116,7 +109,7 @@ impl Default for WindowsHybridManager {
 
 pub struct WindowsSeccompFilter {
     enabled: AtomicBool,
-    _allowed_syscalls: RwLock<Vec<libc::c_long>>,
+    _allowed_syscalls: Vec<libc::c_long>,
 }
 
 impl WindowsSeccompFilter {
@@ -170,11 +163,13 @@ impl WindowsSeccompFilter {
             libc::SYS_fcntl,
             libc::SYS_flock,
             libc::SYS_fsync,
+            libc::SYS_fdatasync,
             libc::SYS_truncate,
             libc::SYS_ftruncate,
             libc::SYS_getdents,
             libc::SYS_getcwd,
             libc::SYS_chdir,
+            libc::SYS_fchdir,
             libc::SYS_rename,
             libc::SYS_mkdir,
             libc::SYS_rmdir,
@@ -184,14 +179,15 @@ impl WindowsSeccompFilter {
             libc::SYS_symlink,
             libc::SYS_readlink,
             libc::SYS_chmod,
+            libc::SYS_fchmod,
             libc::SYS_chown,
+            libc::SYS_fchown,
+            libc::SYS_lchown,
             libc::SYS_umask,
             libc::SYS_gettimeofday,
             libc::SYS_getrlimit,
             libc::SYS_getrusage,
             libc::SYS_sysinfo,
-            libc::SYS_times,
-            libc::SYS_ptrace,
             libc::SYS_getuid,
             libc::SYS_syslog,
             libc::SYS_getgid,
@@ -218,7 +214,7 @@ impl WindowsSeccompFilter {
 
         Self {
             enabled: AtomicBool::new(default_allow),
-            _allowed_syscalls: RwLock::new(syscalls),
+            _allowed_syscalls: syscalls,
         }
     }
 

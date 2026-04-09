@@ -32,10 +32,13 @@ impl SessionKey {
         let mut nonce_arr = [0u8; 12];
         nonce_arr.copy_from_slice(&nonce[..12]);
 
-        let now = SystemTime::now()
-            .duration_since(UNIX_EPOCH)
-            .map(|d| d.as_millis() as u64)
-            .unwrap_or(0);
+        let now = match SystemTime::now().duration_since(UNIX_EPOCH) {
+            Ok(duration) => duration.as_millis() as u64,
+            Err(e) => {
+                tracing::warn!("SystemTime error in SessionKey::from_master_secret: {}", e);
+                0
+            }
+        };
 
         Ok(Self {
             key: key_arr,
@@ -45,10 +48,10 @@ impl SessionKey {
     }
 
     pub fn is_expired(&self) -> bool {
-        let now = SystemTime::now()
-            .duration_since(UNIX_EPOCH)
-            .map(|d| d.as_millis() as u64)
-            .unwrap_or(0);
+        let now = match SystemTime::now().duration_since(UNIX_EPOCH) {
+            Ok(duration) => duration.as_millis() as u64,
+            Err(_) => 0,
+        };
         now >= self.expiration
     }
 }
@@ -64,7 +67,7 @@ pub fn client_handshake(
 
     let session = SessionKey::from_master_secret(&shared_secret)?;
 
-    let mut handshake_msg = Vec::with_capacity(1312 + 3309);
+    let mut handshake_msg = Vec::with_capacity(ciphertext.len() + signature.len());
     handshake_msg.extend_from_slice(&ciphertext);
     handshake_msg.extend_from_slice(&signature);
     Ok((session, handshake_msg))
@@ -75,19 +78,19 @@ pub fn server_handshake(
     peer_dilithium_pub: &[u8; 1952],
     handshake_msg: &[u8],
 ) -> Result<SessionKey> {
-    if handshake_msg.len() != 1312 + 3309 {
-        return Err(anyhow!("Invalid handshake message length"));
+    // Kyber ciphertext is 1088 bytes, Dilithium signature is 3309 bytes
+    if handshake_msg.len() < 1088 + 1 {
+        return Err(anyhow!(
+            "Invalid handshake message length: {}",
+            handshake_msg.len()
+        ));
     }
-    let (ciphertext, signature) = handshake_msg.split_at(1312);
-    let ciphertext_arr: [u8; 1312] = ciphertext
+    let (ciphertext, signature) = handshake_msg.split_at(1088);
+    let ciphertext_arr: [u8; 1088] = ciphertext
         .try_into()
         .map_err(|_| anyhow!("ciphertext size mismatch"))?;
 
-    let signature_arr: [u8; 3309] = signature
-        .try_into()
-        .map_err(|_| anyhow!("signature size mismatch"))?;
-
-    let verified = dilithium_verify(peer_dilithium_pub, ciphertext, &signature_arr)
+    let verified = dilithium_verify(peer_dilithium_pub, ciphertext, signature)
         .map_err(|e| anyhow!("Dilithium verify failed: {}", e))?;
     if !verified {
         return Err(anyhow!("Dilithium signature verification failed"));

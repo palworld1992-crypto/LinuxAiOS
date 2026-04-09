@@ -1,8 +1,8 @@
 //! Model Manager for Windows Assistant – manages INT4/GGUF models
 
 use dashmap::DashMap;
-use parking_lot::RwLock;
 use std::path::Path;
+use std::sync::atomic::{AtomicU32, AtomicU64, Ordering};
 use thiserror::Error;
 use tracing::info;
 
@@ -16,29 +16,41 @@ pub enum ModelError {
     UnloadError(String),
 }
 
-#[derive(Clone, Debug)]
+#[derive(Debug)]
 pub struct ModelInfo {
     pub id: String,
     pub path: String,
     pub size_mb: u64,
     pub loaded: bool,
-    pub ref_count: u32,
+    pub ref_count: AtomicU32,
+}
+
+impl Clone for ModelInfo {
+    fn clone(&self) -> Self {
+        Self {
+            id: self.id.clone(),
+            path: self.path.clone(),
+            size_mb: self.size_mb,
+            loaded: self.loaded,
+            ref_count: AtomicU32::new(self.ref_count.load(Ordering::Relaxed)),
+        }
+    }
 }
 
 pub struct WindowsModelManager {
     models: DashMap<String, ModelInfo>,
-    active_model: RwLock<Option<String>>,
+    active_model: AtomicU64,
     max_memory_mb: u64,
-    current_memory_mb: RwLock<u64>,
+    current_memory_mb: AtomicU64,
 }
 
 impl WindowsModelManager {
     pub fn new(max_memory_mb: u64) -> Self {
         Self {
             models: DashMap::new(),
-            active_model: RwLock::new(None),
+            active_model: AtomicU64::new(0),
             max_memory_mb,
-            current_memory_mb: RwLock::new(0),
+            current_memory_mb: AtomicU64::new(0),
         }
     }
 
@@ -59,87 +71,75 @@ impl WindowsModelManager {
             path: path.display().to_string(),
             size_mb,
             loaded: false,
-            ref_count: 0,
+            ref_count: AtomicU32::new(0),
         };
 
         self.models.insert(id.to_string(), info.clone());
         info!("Registered model {} ({} MB)", id, size_mb);
-
         Ok(info)
     }
 
-    pub fn load_model(&self, id: &str) -> Result<ModelInfo, ModelError> {
-        let mut memory = self.current_memory_mb.write();
-        let model = self
+    pub fn load_model(&self, id: &str) -> Result<(), ModelError> {
+        let mut model = self
             .models
-            .get(id)
+            .get_mut(id)
             .ok_or_else(|| ModelError::NotFound(id.to_string()))?;
 
-        let model = model.clone();
-
-        if model.loaded {
-            return Ok(model);
-        }
-
-        if *memory + model.size_mb > self.max_memory_mb {
-            return Err(ModelError::LoadError("Not enough memory".to_string()));
-        }
-
-        *memory += model.size_mb;
-
-        let mut info = model.clone();
-        info.loaded = true;
-        info.ref_count = 1;
-
-        self.models.insert(id.to_string(), info.clone());
-        *self.active_model.write() = Some(id.to_string());
-
-        info!("Loaded model {} (total memory: {} MB)", id, *memory);
-        Ok(info)
-    }
-
-    pub fn unload_model(&self, id: &str) -> Result<(), ModelError> {
-        let mut memory = self.current_memory_mb.write();
-
-        let model = self
-            .models
-            .get(id)
-            .ok_or_else(|| ModelError::NotFound(id.to_string()))?;
-
-        let size_mb = model.value().size_mb;
-
-        *memory = memory.saturating_sub(size_mb);
-
-        let mut info = model.value().clone();
-        info.loaded = false;
-        info.ref_count = 0;
-
-        self.models.insert(id.to_string(), info);
-
-        if let Some(ref active) = *self.active_model.read() {
-            if active == id {
-                *self.active_model.write() = None;
-            }
-        }
-
-        info!("Unloaded model {} (total memory: {} MB)", id, *memory);
+        model.loaded = true;
+        self.current_memory_mb
+            .fetch_add(model.size_mb, Ordering::Relaxed);
         Ok(())
     }
 
-    pub fn get_model(&self, id: &str) -> Option<ModelInfo> {
-        self.models.get(id).map(|r| r.clone())
-    }
+    pub fn unload_model(&self, id: &str) -> Result<(), ModelError> {
+        let mut model = self
+            .models
+            .get_mut(id)
+            .ok_or_else(|| ModelError::NotFound(id.to_string()))?;
 
-    pub fn list_models(&self) -> Vec<ModelInfo> {
-        self.models.iter().map(|r| r.clone()).collect()
+        if model.ref_count.load(Ordering::Relaxed) > 0 {
+            return Err(ModelError::UnloadError("Model in use".to_string()));
+        }
+
+        model.loaded = false;
+        self.current_memory_mb
+            .fetch_sub(model.size_mb, Ordering::Relaxed);
+        Ok(())
     }
 
     pub fn get_active_model(&self) -> Option<String> {
-        self.active_model.read().clone()
+        let id_ptr = self.active_model.load(Ordering::Relaxed);
+        if id_ptr == 0 {
+            return None;
+        }
+        unsafe {
+            let s = std::slice::from_raw_parts(id_ptr as *const u8, 20);
+            std::str::from_utf8(s)
+                .ok()
+                .map(|s| s.trim_end_matches('\0').to_string())
+        }
     }
 
-    pub fn get_memory_usage(&self) -> (u64, u64) {
-        let current = *self.current_memory_mb.read();
-        (current, self.max_memory_mb)
+    pub fn set_active_model(&self, id: &str) {
+        let id_ptr = id.as_ptr() as u64;
+        self.active_model.store(id_ptr, Ordering::Relaxed);
+    }
+
+    pub fn get_memory_usage(&self) -> u64 {
+        self.current_memory_mb.load(Ordering::Relaxed)
+    }
+
+    pub fn is_memory_available(&self, size_mb: u64) -> bool {
+        self.current_memory_mb.load(Ordering::Relaxed) + size_mb <= self.max_memory_mb
+    }
+
+    pub fn list_models(&self) -> Vec<ModelInfo> {
+        self.models.iter().map(|r| r.value().clone()).collect()
+    }
+}
+
+impl Default for WindowsModelManager {
+    fn default() -> Self {
+        Self::new(4096)
     }
 }

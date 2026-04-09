@@ -1,6 +1,7 @@
 //! Policy Engine - đọc chính sách từ JSON
 use serde::Deserialize;
 use std::fs;
+use tracing::warn;
 
 #[derive(Debug, Deserialize)]
 struct PolicyConfig {
@@ -23,10 +24,19 @@ impl PolicyEngine {
         let default_config = PolicyConfig {
             risk_threshold: 0.7,
         };
-        let config = fs::read_to_string("/etc/aios/policy.json")
-            .ok()
-            .and_then(|s| serde_json::from_str(&s).ok())
-            .unwrap_or(default_config);
+        let config = match fs::read_to_string("/etc/aios/policy.json") {
+            Ok(s) => match serde_json::from_str(&s) {
+                Ok(c) => c,
+                Err(e) => {
+                    warn!("Failed to parse policy.json: {}, using defaults", e);
+                    default_config
+                }
+            },
+            Err(e) => {
+                warn!("Failed to read policy.json: {}, using defaults", e);
+                default_config
+            }
+        };
         Self { config }
     }
 

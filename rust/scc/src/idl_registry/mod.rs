@@ -10,23 +10,30 @@ mod tests {
     use std::ptr;
 
     #[test]
-    #[ignore = "Requires Ada crypto libraries, may segfault if not available"]
     fn test_layout_calculator() {
-        // TODO: fix Ada layout issue (tạm thời bỏ qua)
-        // Đảm bảo test luôn pass để không chặn build
-        assert!(true);
+        let mut t = IDLType {
+            kind: IDLKind::U32,
+            element_type: std::ptr::null_mut(),
+            length: 0,
+            field_count: 0,
+            fields: std::ptr::null_mut(),
+        };
+        LayoutCalculator::compute_layout(&mut t);
     }
 
     #[test]
-    #[ignore = "Requires Ada crypto libraries, may segfault if not available"]
     fn test_type_mapper() {
-        let mut u32_type = IDLType {
+        let u32_type = IDLType {
             kind: IDLKind::U32,
             element_type: ptr::null_mut(),
             length: 0,
             field_count: 0,
-            fields: ptr::null_mut(),
+            fields: std::ptr::null_mut(),
         };
-        assert_eq!(unsafe { ffi::type_mapper_map_type(&mut u32_type) }, 4);
+        // SAFETY: `u32_type` is a valid IDLType with all fields properly initialized.
+        // The FFI function `type_mapper_map_type` only reads these fields and does
+        // not cause undefined behavior.
+        let result = unsafe { ffi::type_mapper_map_type(&u32_type) };
+        assert_eq!(result, 4);
     }
 }

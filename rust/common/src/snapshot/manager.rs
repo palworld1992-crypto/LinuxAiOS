@@ -22,6 +22,9 @@ impl Signature {
     }
 
     pub fn zeros() -> Self {
+        // Phase 3: Generate a deterministic zero signature for snapshots
+        // In production, this should be replaced with real Dilithium signature generation
+        // using private keys from the密钥管理
         Self(vec![0u8; 2420])
     }
 
@@ -172,7 +175,8 @@ mod tests {
     fn test_snapshot() -> Result<(), SnapshotError> {
         let mgr = SnapshotManager::new(PathBuf::from("/tmp/test_snap"));
         let data = b"test data";
-        let snap = mgr.create_snapshot(data, Signature::zeros())?;
+        let sig = Signature::from_raw(vec![1u8; 2420]);
+        let snap = mgr.create_snapshot(data, sig)?;
         assert!(!snap.id.is_empty());
         Ok(())
     }

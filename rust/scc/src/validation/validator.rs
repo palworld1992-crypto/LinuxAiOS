@@ -80,31 +80,22 @@ mod tests {
     use super::*;
 
     #[test]
-    fn test_validate_valid_token() {
+    fn test_validate_valid_token() -> Result<(), anyhow::Error> {
         let validator = IntentValidator::new();
-        let token = IntentToken::new([0u8; 32], 1, 200);
-        // Test chỉ chạy nếu token được tạo thành công
-        // (Trong môi trường test có thể dùng unwrap vì đây là test cụ thể)
-        let token = match token {
-            Ok(t) => t,
-            Err(e) => {
-                eprintln!("Skipping test: Failed to create token: {}", e);
-                return;
-            }
-        };
+        let token = IntentToken::new([0u8; 32], 1, 200)?;
         assert!(validator.validate(&token).is_ok());
+        Ok(())
     }
 
     #[test]
-    fn test_check_policy() {
-        let result = IntentValidator::check_policy(&[0u8; 32]);
-        assert!(result.is_ok(), "check_policy should not fail");
-        let policy = result.unwrap();
-        assert!(policy.allow);
+    fn test_check_policy() -> Result<(), anyhow::Error> {
+        let result = IntentValidator::check_policy(&[0u8; 32])?;
+        assert!(result.allow);
+        Ok(())
     }
 
     #[test]
-    fn test_update_policy() {
+    fn test_update_policy() -> Result<(), anyhow::Error> {
         let validator = IntentValidator::new();
         validator.update_policy(
             [0u8; 32],
@@ -113,15 +104,9 @@ mod tests {
                 max_urgency: 100,
             },
         );
-        let token_result = IntentToken::new([0u8; 32], 1, 50);
-        let token = match token_result {
-            Ok(t) => t,
-            Err(e) => {
-                eprintln!("Skipping test: Failed to create token: {}", e);
-                return;
-            }
-        };
+        let token = IntentToken::new([0u8; 32], 1, 50)?;
         let result = validator.validate(&token);
         assert!(result.is_err());
+        Ok(())
     }
 }

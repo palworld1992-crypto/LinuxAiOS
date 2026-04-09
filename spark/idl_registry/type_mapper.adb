@@ -1,10 +1,13 @@
+--  SPARK_Mode (Off): Uses access types and pointer operations
+--  which cannot be formally verified by SPARK.
+pragma SPARK_Mode (Off);
+
 with IDL_Types;
 with Interfaces.C;
 use IDL_Types;
+use type Interfaces.C.size_t;
 
 package body Type_Mapper is
-
-   use type Interfaces.C.size_t;
 
    procedure Map_Type
      (T : access constant IDL_Type;
@@ -41,8 +44,12 @@ package body Type_Mapper is
             Total := 8;
          when Kind_Array =>
             if T.Element_Type /= null then
-               Map_Type (T.Element_Type, Total);
-               Total := Total * T.Length;
+               declare
+                  Elem_Size : Interfaces.C.size_t;
+               begin
+                  Map_Type (T.Element_Type, Elem_Size);
+                  Total := Elem_Size * T.Length;
+               end;
             end if;
          when Kind_Struct =>
             null;

@@ -24,7 +24,7 @@ impl ParallelEncapsulator {
         num_chunks: usize,
     ) -> Result<(Vec<u8>, u64)> {
         if payload.is_empty() {
-            return Ok((Vec::new(), counter.load(Ordering::Relaxed)));
+            return Ok((vec![], counter.load(Ordering::Relaxed)));
         }
 
         // Adaptive: Chỉ parallel khi payload > 32KB
@@ -118,21 +118,28 @@ impl ParallelEncapsulator {
     }
 
     /// Giải mã dữ liệu đã được prefix độ dài.
-    pub fn decapsulate(key: &[u8; 32], data: &[u8], aad: &[u8]) -> Option<Vec<u8>> {
+    pub fn decapsulate(key: &[u8; 32], data: &[u8], aad: &[u8]) -> Result<Vec<u8>> {
         let cipher = Aes256Gcm::new(Key::<Aes256Gcm>::from_slice(key));
         let mut pos = 0;
-        let mut plain = Vec::new();
+        let mut plain = vec![];
 
         while pos < data.len() {
             if pos + 4 > data.len() {
-                return None;
+                return Err(anyhow!("truncated length prefix at position {}", pos));
             }
-            let len_bytes: [u8; 4] = data[pos..pos + 4].try_into().ok()?;
+            let len_bytes: [u8; 4] = data[pos..pos + 4]
+                .try_into()
+                .map_err(|_| anyhow!("failed to read length prefix at position {}", pos))?;
             let chunk_len = u32::from_le_bytes(len_bytes) as usize;
             pos += 4;
 
             if pos + 12 + chunk_len > data.len() {
-                return None;
+                return Err(anyhow!(
+                    "truncated chunk at position {}: need {} bytes, have {}",
+                    pos,
+                    12 + chunk_len,
+                    data.len() - pos
+                ));
             }
             let nonce_bytes = &data[pos..pos + 12];
             pos += 12;
@@ -148,26 +155,29 @@ impl ParallelEncapsulator {
                         aad,
                     },
                 )
-                .ok()?;
+                .map_err(|e| anyhow!("AES-GCM decryption failed at position {}: {}", pos, e))?;
             plain.extend_from_slice(&p);
         }
-        Some(plain)
+        Ok(plain)
     }
 }
 
 #[cfg(test)]
 mod tests {
     use super::ParallelEncapsulator;
+    use anyhow::Result;
     use std::sync::atomic::AtomicU64;
 
     #[test]
-    fn decapsulate_rejects_truncated_length_prefix() {
+    fn decapsulate_rejects_truncated_length_prefix() -> Result<()> {
         let key = [0u8; 32];
-        assert!(ParallelEncapsulator::decapsulate(&key, &[1, 2, 3], b"aad").is_none());
+        let result = ParallelEncapsulator::decapsulate(&key, &[1, 2, 3], b"aad");
+        assert!(result.is_err());
+        Ok(())
     }
 
     #[test]
-    fn test_single_encapsulation_small_payload() {
+    fn test_single_encapsulation_small_payload() -> Result<()> {
         let key = [7u8; 32];
         let nonce_base = [9u8; 12];
         let counter = AtomicU64::new(0);
@@ -175,21 +185,20 @@ mod tests {
         let aad = b"integration-aad";
 
         let (cipher, counter_val) =
-            ParallelEncapsulator::encapsulate(&key, &nonce_base, &counter, &payload, aad, 4)
-                .expect("single encryption should succeed");
+            ParallelEncapsulator::encapsulate(&key, &nonce_base, &counter, &payload, aad, 4)?;
 
         assert_eq!(
             counter_val, 0,
             "Counter should start at 0 for single encapsulation"
         );
 
-        let plain = ParallelEncapsulator::decapsulate(&key, &cipher, aad)
-            .expect("decryption should succeed");
+        let plain = ParallelEncapsulator::decapsulate(&key, &cipher, aad)?;
         assert_eq!(plain, payload);
+        Ok(())
     }
 
     #[test]
-    fn test_parallel_encapsulation_large_payload() {
+    fn test_parallel_encapsulation_large_payload() -> Result<()> {
         let key = [7u8; 32];
         let nonce_base = [9u8; 12];
         let counter = AtomicU64::new(0);
@@ -197,16 +206,15 @@ mod tests {
         let aad = b"integration-aad";
 
         let (cipher, _) =
-            ParallelEncapsulator::encapsulate(&key, &nonce_base, &counter, &payload, aad, 4)
-                .expect("parallel encryption should succeed");
+            ParallelEncapsulator::encapsulate(&key, &nonce_base, &counter, &payload, aad, 4)?;
 
-        let plain = ParallelEncapsulator::decapsulate(&key, &cipher, aad)
-            .expect("parallel decryption should succeed");
+        let plain = ParallelEncapsulator::decapsulate(&key, &cipher, aad)?;
         assert_eq!(plain, payload);
+        Ok(())
     }
 
     #[test]
-    fn parallel_roundtrip_encrypt_decrypt() {
+    fn parallel_roundtrip_encrypt_decrypt() -> Result<()> {
         let key = [7u8; 32];
         let nonce_base = [9u8; 12];
         let counter = AtomicU64::new(0);
@@ -214,11 +222,10 @@ mod tests {
         let aad = b"integration-aad";
 
         let (cipher, _) =
-            ParallelEncapsulator::encapsulate(&key, &nonce_base, &counter, &payload, aad, 4)
-                .expect("parallel encryption should succeed");
+            ParallelEncapsulator::encapsulate(&key, &nonce_base, &counter, &payload, aad, 4)?;
 
-        let plain = ParallelEncapsulator::decapsulate(&key, &cipher, aad)
-            .expect("parallel decryption should succeed");
+        let plain = ParallelEncapsulator::decapsulate(&key, &cipher, aad)?;
         assert_eq!(plain, payload);
+        Ok(())
     }
 }

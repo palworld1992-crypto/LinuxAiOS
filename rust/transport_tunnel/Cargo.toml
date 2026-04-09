@@ -18,6 +18,7 @@ aes-gcm = "0.10"
 rand = { workspace = true }
 memmap2 = "0.9"
 parking_lot = "0.12"
+dashmap = "6.0"
 tracing = "0.1"
 anyhow = "1.0"
 bytemuck = "1.14"

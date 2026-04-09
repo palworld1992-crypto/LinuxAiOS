@@ -1,7 +1,9 @@
 //! Wine Executor for Windows Module
 
-use parking_lot::RwLock;
+use dashmap::DashMap;
 use std::process::{Child, Command, Stdio};
+use std::sync::atomic::{AtomicBool, AtomicU32, Ordering};
+use std::sync::Arc;
 use thiserror::Error;
 use tracing::info;
 
@@ -37,30 +39,33 @@ impl Default for WineConfig {
 }
 
 pub struct WineExecutor {
-    config: RwLock<WineConfig>,
-    child: RwLock<Option<Child>>,
-    running: RwLock<bool>,
+    config: Arc<WineConfig>,
+    child: DashMap<u64, Option<Child>>,
+    running: AtomicBool,
+    pid: AtomicU32,
 }
 
 impl WineExecutor {
     pub fn new() -> Self {
         Self {
-            config: RwLock::new(WineConfig::default()),
-            child: RwLock::new(None),
-            running: RwLock::new(false),
+            config: Arc::new(WineConfig::default()),
+            child: DashMap::new(),
+            running: AtomicBool::new(false),
+            pid: AtomicU32::new(0),
         }
     }
 
     pub fn with_config(config: WineConfig) -> Self {
         Self {
-            config: RwLock::new(config),
-            child: RwLock::new(None),
-            running: RwLock::new(false),
+            config: Arc::new(config),
+            child: DashMap::new(),
+            running: AtomicBool::new(false),
+            pid: AtomicU32::new(0),
         }
     }
 
-    pub fn set_config(&self, config: WineConfig) {
-        *self.config.write() = config;
+    pub fn set_config(&mut self, config: WineConfig) {
+        self.config = Arc::new(config);
     }
 
     pub fn find_wine() -> Result<String, WineError> {
@@ -68,8 +73,8 @@ impl WineExecutor {
             "/usr/bin/wine",
             "/usr/local/bin/wine",
             "/opt/wine-stable/bin/wine",
-            "/opt/wine-devel/bin/wine",
-            "/opt/wine-staging/bin/wine",
+            "/opt/wine-development/bin/wine",
+            "/usr/bin/wine64",
         ];
 
         for path in wine_paths {
@@ -81,112 +86,77 @@ impl WineExecutor {
         Err(WineError::NotFound)
     }
 
-    pub fn start(&self, program: Option<&str>) -> Result<u32, WineError> {
-        if *self.running.read() {
-            if let Some(ref child) = *self.child.read() {
-                return Ok(child.id());
-            }
-        }
+    pub fn is_wine_available(&self) -> bool {
+        Self::find_wine().is_ok()
+    }
 
+    pub fn start(&self) -> Result<u32, WineError> {
         let wine_path = Self::find_wine()?;
-        let cfg = self.config.read().clone();
 
         let mut cmd = Command::new(&wine_path);
-        cmd.arg("server");
-
-        if let Some(ref prefix) = cfg.prefix {
-            cmd.env("WINEPREFIX", prefix);
-        }
-
-        cmd.arg("-timeout").arg(cfg.server_timeout.to_string());
-
-        let _server = cmd
-            .spawn()
-            .map_err(|e| WineError::StartError(e.to_string()))?;
-
-        let mut cmd = Command::new(wine_path);
-        if let Some(ref prefix) = cfg.prefix {
-            cmd.env("WINEPREFIX", prefix);
-        }
-        cmd.env("WINEDEBUG", "-all");
-        cmd.env("WINESERVER", format!("-timeout {}", cfg.server_timeout));
-
-        if !cfg.preload_libs.is_empty() {
-            let ld_preload = cfg.preload_libs.join(":");
-            cmd.env("LD_PRELOAD", ld_preload);
-        }
-
-        if let Some(prog) = program {
-            cmd.arg(prog);
-        } else if let Some(ref prog) = cfg.program {
-            cmd.arg(prog);
-        }
-
         cmd.stdin(Stdio::null());
         cmd.stdout(Stdio::null());
         cmd.stderr(Stdio::null());
+
+        if let Some(ref prefix) = self.config.prefix {
+            cmd.env("WINEPREFIX", prefix);
+        }
+
+        cmd.env("WINARCH", &self.config.arch);
+        cmd.env("WINESERVER", format!("-t {}", self.config.server_timeout));
+
+        for lib in &self.config.preload_libs {
+            cmd.env("LD_PRELOAD", lib);
+        }
+
+        if let Some(ref program) = self.config.program {
+            cmd.arg(program);
+        }
 
         let child = cmd
             .spawn()
             .map_err(|e| WineError::StartError(e.to_string()))?;
         let pid = child.id();
 
-        *self.child.write() = Some(child);
-        *self.running.write() = true;
+        self.child.insert(0, Some(child));
+
+        self.running.store(true, Ordering::Relaxed);
+        self.pid.store(pid, Ordering::Relaxed);
 
         info!("Wine started with PID {}", pid);
         Ok(pid)
     }
 
     pub fn stop(&self) -> Result<(), WineError> {
-        if let Some(ref mut child) = self.child.write().take() {
-            child
-                .kill()
-                .map_err(|e| WineError::ProcessError(e.to_string()))?;
+        let pid = self.pid.load(Ordering::Relaxed);
+        if pid != 0 {
+            let _ = std::process::Command::new("kill")
+                .arg("-9")
+                .arg(pid.to_string())
+                .output();
+        }
+
+        if let Some((_, Some(mut child))) = self.child.remove(&0) {
+            let _ = child.kill();
             let _ = child.wait();
         }
-        *self.running.write() = false;
+
+        self.running.store(false, Ordering::Relaxed);
+        self.pid.store(0, Ordering::Relaxed);
         info!("Wine stopped");
         Ok(())
     }
 
     pub fn is_running(&self) -> bool {
-        *self.running.read()
+        self.running.load(Ordering::Relaxed)
     }
 
-    pub fn get_pid(&self) -> Option<u32> {
-        self.child.read().as_ref().map(|c| c.id())
+    pub fn get_pid(&self) -> u32 {
+        self.pid.load(Ordering::Relaxed)
     }
 
-    pub fn execute_command(&self, args: &[&str]) -> Result<std::process::Output, WineError> {
-        let wine_path = Self::find_wine()?;
-        let cfg = self.config.read().clone();
-
-        let mut cmd = Command::new(wine_path);
-        if let Some(ref prefix) = cfg.prefix {
-            cmd.env("WINEPREFIX", prefix);
-        }
-        cmd.args(args);
-
-        cmd.output()
-            .map_err(|e| WineError::ProcessError(e.to_string()))
-    }
-
-    pub fn get_version(&self) -> Result<String, WineError> {
-        let output = self.execute_command(&["--version"])?;
-        Ok(String::from_utf8_lossy(&output.stdout).trim().to_string())
-    }
-
-    pub fn create_prefix(&self, prefix_path: &str) -> Result<(), WineError> {
-        let wine_path = Self::find_wine()?;
-        let mut cmd = Command::new(wine_path);
-        cmd.arg("boot");
-        cmd.env("WINEPREFIX", prefix_path);
-
-        cmd.output()
-            .map_err(|e| WineError::ProcessError(e.to_string()))?;
-        info!("Created Wine prefix at {}", prefix_path);
-        Ok(())
+    pub fn get_config(&self) -> WineConfig {
+        self.config.as_ref().clone()
     }
 }
 

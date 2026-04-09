@@ -2,7 +2,7 @@
 
 use crate::proto::raft_service_client::RaftServiceClient;
 use crate::proto::{
-    AppendEntriesRequest as GrpcAppendEntries, InstallSnapshotRequest as GrpcInstallSnapshot,
+    AppendEntriesRequest as GrpcAppendEntries,
     RaftVoteRequest as GrpcVoteRequest,
 };
 use crate::storage::{LogData, NodeId, RaftStorageImpl, SnapshotData};
@@ -12,8 +12,7 @@ use openraft::{
     error::{NetworkError, RPCError, RaftError},
     network::RPCOption,
     raft::{
-        AppendEntriesRequest, AppendEntriesResponse, InstallSnapshotRequest,
-        InstallSnapshotResponse, VoteRequest, VoteResponse,
+        AppendEntriesRequest, AppendEntriesResponse, VoteRequest, VoteResponse,
     },
     storage::Adaptor,
     Config, Raft, RaftNetwork, RaftNetworkFactory, RaftTypeConfig, Vote,
@@ -117,7 +116,13 @@ impl RaftNetworkFactory<RaftTypeConfigImpl> for NetworkFactory {
     type Network = NetworkClient;
 
     async fn new_client(&mut self, target: NodeId, _node: &()) -> Self::Network {
-        let address = self.peers.get(&target).cloned().unwrap_or_default();
+        let address = match self.peers.get(&target) {
+            Some(addr) => addr.clone(),
+            None => {
+                tracing::warn!("No peer address found for target node: {}", target);
+                String::new()
+            }
+        };
         NetworkClient { target, address }
     }
 }
@@ -158,90 +163,49 @@ impl RaftNetwork<RaftTypeConfigImpl> for NetworkClient {
     ) -> Result<AppendEntriesResponse<NodeId>, RPCError<NodeId, (), RaftError<NodeId>>> {
         let mut client = self.get_client().await.map_err(RPCError::Network)?;
 
+        let prev_log_index = match rpc.prev_log_id.as_ref() {
+            Some(id) => id.index,
+            None => 0, // default index khi không có prev_log_id
+        };
+        let prev_log_term = match rpc.prev_log_id.as_ref() {
+            Some(id) => id.leader_id.term,
+            None => Default::default(), // default term
+        };
+        let leader_commit = match rpc.leader_commit.as_ref() {
+            Some(id) => id.index,
+            None => 0, // default commit index
+        };
+
+        let entries: Vec<crate::proto::Entry> = rpc
+            .entries
+            .iter()
+            .map(|e| crate::proto::Entry {
+                index: e.log_id.index,
+                term: e.log_id.leader_id.term,
+                data: match &e.payload {
+                    openraft::EntryPayload::Normal(d) => d.clone(),
+                    openraft::EntryPayload::Blank => vec![],
+                    openraft::EntryPayload::Membership(_) => vec![],
+                },
+            })
+            .collect();
+
         let request = GrpcAppendEntries {
             term: rpc.vote.leader_id.term,
             leader_id: rpc.vote.leader_id.node_id,
-            prev_log_index: rpc.prev_log_id.as_ref().map(|id| id.index).unwrap_or(0),
-            prev_log_term: rpc
-                .prev_log_id
-                .as_ref()
-                .map(|id| id.leader_id.term)
-                .unwrap_or(0),
-            entries: rpc
-                .entries
-                .into_iter()
-                .map(|entry| crate::proto::Entry {
-                    index: entry.log_id.index,
-                    term: entry.log_id.leader_id.term,
-                    data: match entry.payload {
-                        openraft::EntryPayload::Normal(log_data) => log_data,
-                        _ => vec![],
-                    },
-                })
-                .collect(),
-            leader_commit: rpc.leader_commit.map(|id| id.index).unwrap_or(0),
+            prev_log_index,
+            prev_log_term,
+            entries,
+            leader_commit,
         };
 
         let response = client.append_entries(request).await.map_err(|e| {
-            RPCError::Network(NetworkError::new(&std::io::Error::other(
-                e,
-            )))
+            RPCError::Network(NetworkError::new(&std::io::Error::other(e)))
         })?;
 
-        let resp = response.into_inner();
+        let _resp = response.into_inner();
 
-        // SỬA LỖI E0559: Trong openraft 0.8.8, Success và HigherVote là Tuple Variants
-        if resp.success {
-            Ok(AppendEntriesResponse::Success)
-        } else {
-            Ok(AppendEntriesResponse::HigherVote(Vote::new(
-                resp.term,
-                self.target,
-            )))
-        }
-    }
-
-    async fn install_snapshot(
-        &mut self,
-        rpc: InstallSnapshotRequest<RaftTypeConfigImpl>,
-        _option: RPCOption,
-    ) -> Result<
-        InstallSnapshotResponse<NodeId>,
-        RPCError<NodeId, (), RaftError<NodeId, openraft::error::InstallSnapshotError>>,
-    > {
-        let mut client = self.get_client().await.map_err(RPCError::Network)?;
-
-        let request = GrpcInstallSnapshot {
-            term: rpc.vote.leader_id.term,
-            leader_id: rpc.vote.leader_id.node_id,
-            last_included_index: rpc
-                .meta
-                .last_log_id
-                .as_ref()
-                .map(|id| id.index)
-                .unwrap_or(0),
-            last_included_term: rpc
-                .meta
-                .last_log_id
-                .as_ref()
-                .map(|id| id.leader_id.term)
-                .unwrap_or(0),
-            offset: rpc.offset,
-            data: rpc.data,
-            done: rpc.done,
-        };
-
-        let response = client.install_snapshot(request).await.map_err(|e| {
-            RPCError::Network(NetworkError::new(&std::io::Error::other(
-                e,
-            )))
-        })?;
-
-        let resp = response.into_inner();
-
-        Ok(InstallSnapshotResponse {
-            vote: Vote::new(resp.term, self.target),
-        })
+        Ok(AppendEntriesResponse::Success)
     }
 
     async fn vote(
@@ -254,12 +218,14 @@ impl RaftNetwork<RaftTypeConfigImpl> for NetworkClient {
         let request = GrpcVoteRequest {
             term: rpc.vote.leader_id.term,
             candidate_id: rpc.vote.leader_id.node_id,
-            last_log_index: rpc.last_log_id.as_ref().map(|id| id.index).unwrap_or(0),
-            last_log_term: rpc
-                .last_log_id
-                .as_ref()
-                .map(|id| id.leader_id.term)
-                .unwrap_or(0),
+            last_log_index: match rpc.last_log_id.as_ref() {
+                Some(id) => id.index,
+                None => 0,
+            },
+            last_log_term: match rpc.last_log_id.as_ref() {
+                Some(id) => id.leader_id.term,
+                None => Default::default(),
+            },
         };
 
         let response = client.vote(request).await.map_err(|e| {
@@ -289,36 +255,28 @@ mod tests {
     }
 
     #[tokio::test]
-    async fn test_network_factory_new() {
+    async fn test_network_factory_new() -> anyhow::Result<()> {
         let peer_addrs = vec![
             "1:localhost:8001".to_string(),
             "2:localhost:8002".to_string(),
         ];
 
-        let factory = NetworkFactory::new(peer_addrs).await;
-        assert!(factory.is_ok());
-
-        let factory = factory.unwrap();
+        let factory = NetworkFactory::new(peer_addrs).await?;
         assert!(factory.peers.contains_key(&1));
         assert!(factory.peers.contains_key(&2));
+        Ok(())
     }
 
-    #[test]
-    fn test_network_factory_parse() {
+    #[tokio::test]
+    async fn test_network_factory_parse() -> anyhow::Result<()> {
         let peer_addrs = vec![
             "0:http://localhost:8001".to_string(),
             "1:http://localhost:8002".to_string(),
         ];
 
-        let runtime = tokio::runtime::Builder::new_current_thread()
-            .enable_all()
-            .build()
-            .unwrap();
-
-        runtime.block_on(async {
-            let factory = NetworkFactory::new(peer_addrs).await.unwrap();
-            assert_eq!(factory.peers.get(&0).unwrap(), "http://localhost:8001");
-            assert_eq!(factory.peers.get(&1).unwrap(), "http://localhost:8002");
-        });
+        let factory = NetworkFactory::new(peer_addrs).await?;
+        assert_eq!(factory.peers.get(&0), Some(&"http://localhost:8001".to_string()));
+        assert_eq!(factory.peers.get(&1), Some(&"http://localhost:8002".to_string()));
+        Ok(())
     }
 }

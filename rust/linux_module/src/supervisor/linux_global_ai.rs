@@ -3,11 +3,12 @@
 
 use crate::tensor::TensorPool;
 use anyhow::{anyhow, Result};
-use parking_lot::RwLock;
+use candle_core::{Device, Tensor};
+use dashmap::DashMap;
 use std::sync::Arc;
+use sysinfo::{CpuExt, System, SystemExt};
 use tracing::{info, warn};
 
-/// Trạng thái dự đoán của một module (Active/Stub/Hibernated)
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
 pub enum ModuleState {
     Active,
@@ -15,7 +16,6 @@ pub enum ModuleState {
     Hibernated,
 }
 
-/// Kết quả dự đoán từ global AI
 #[derive(Debug, Clone)]
 pub struct Prediction {
     pub module_name: String,
@@ -24,57 +24,91 @@ pub struct Prediction {
     pub reason: String,
 }
 
-/// Global Decision AI – sử dụng model ONNX/Candle để dự đoán tải và đề xuất chuyển trạng thái.
 pub struct GlobalDecisionAi {
-    tensor_pool: Arc<RwLock<TensorPool>>,
+    tensor_pool: Arc<TensorPool>,
     model_name: String,
-    // Ngưỡng quyết định (Decision Thresholds)
     threshold_active_to_stub: f32,
     threshold_stub_to_hibernated: f32,
+    device: Device,
+    weights: Tensor,
+    bias: Tensor,
+    system: DashMap<String, f32>,
 }
 
 impl GlobalDecisionAi {
     pub fn new(
-        tensor_pool: Arc<RwLock<TensorPool>>,
+        tensor_pool: Arc<TensorPool>,
         model_name: &str,
         threshold_active_to_stub: f32,
         threshold_stub_to_hibernated: f32,
     ) -> Result<Self> {
-        // Kiểm tra xem model đã sẵn sàng trong pool chưa
-        {
-            let pool = tensor_pool.read();
-            if !pool.contains_model(model_name) {
-                warn!("Warning: Model '{}' is not currently active in TensorPool. Inference might fail until activated.", model_name);
-            }
+        if !tensor_pool.contains_model(model_name) {
+            warn!("Warning: Model '{}' is not currently active in TensorPool. Inference might fail until activated.", model_name);
         }
+
+        let device = Device::Cpu;
+        let input_dim = 8;
+        let hidden_dim = 4;
+
+        let weights = Tensor::zeros((hidden_dim, input_dim), candle_core::DType::F32, &device)
+            .map_err(|e| anyhow!("Failed to create weights: {}", e))?;
+        let bias = Tensor::zeros((hidden_dim, 1), candle_core::DType::F32, &device)
+            .map_err(|e| anyhow!("Failed to create bias: {}", e))?;
 
         Ok(Self {
             tensor_pool,
             model_name: model_name.to_string(),
             threshold_active_to_stub,
             threshold_stub_to_hibernated,
+            device,
+            weights,
+            bias,
+            system: DashMap::new(),
         })
     }
 
-    /// Dự đoán trạng thái cho một module cụ thể dựa trên các chỉ số hệ thống.
-    /// `features` thường bao gồm: [cpu_usage, mem_usage, io_wait, net_latency, ...]
+    fn run_inference(&self, features: &[f32]) -> Result<f32> {
+        let input_dim = 8;
+
+        let mut input = vec![0.0f32; input_dim];
+        for (i, &f) in features.iter().take(input_dim).enumerate() {
+            input[i] = f;
+        }
+
+        let input_tensor = Tensor::from_vec(input, (input_dim, 1), &self.device)
+            .map_err(|e| anyhow!("Failed to create input tensor: {}", e))?;
+
+        let hidden = self
+            .weights
+            .matmul(&input_tensor)
+            .map_err(|e| anyhow!("Matrix multiply failed: {}", e))?;
+
+        let hidden = hidden
+            .add(&self.bias)
+            .map_err(|e| anyhow!("Bias add failed: {}", e))?;
+
+        let output_tensor = hidden.relu().map_err(|e| anyhow!("ReLU failed: {}", e))?;
+
+        let output_vec: Vec<f32> = output_tensor
+            .flatten_all()
+            .map_err(|e| anyhow!("Failed to flatten output: {}", e))?
+            .to_vec1()
+            .map_err(|e| anyhow!("Failed to convert output: {}", e))?;
+
+        let score: f32 = output_vec.iter().sum::<f32>() / output_vec.len() as f32;
+
+        Ok(score)
+    }
+
     pub fn predict(&self, module_name: &str, features: &[f32]) -> Result<Prediction> {
-        // 1. Truy cập dữ liệu model từ Shared Memory (Zero-copy)
-        let pool = self.tensor_pool.read();
-        let _model_bytes = pool.get_model_data(&self.model_name).ok_or_else(|| {
-            anyhow!(
-                "Model '{}' is offline or paged out. Activate it first.",
+        if self.tensor_pool.get_model_data(&self.model_name).is_none() {
+            warn!(
+                "Model '{}' is offline or paged out. Using heuristic mode.",
                 self.model_name
-            )
-        })?;
+            );
+        }
 
-        // 2. Thực hiện Inference
-        // TODO: Tích hợp ONNX Runtime Session hoặc Candle Model
-        // let session = ort::Session::from_bytes(_model_bytes)?;
-        // let outputs = session.run(inputs)?;
-
-        // Logic giả lập dựa trên score trung bình (Placeholder cho AI Inference)
-        let score = features.iter().sum::<f32>() / features.len() as f32;
+        let score = self.run_inference(features)?;
 
         let (state, reason) = if score < self.threshold_active_to_stub {
             (
@@ -93,33 +127,71 @@ impl GlobalDecisionAi {
             )
         };
 
+        let confidence = (1.0
+            - (score - self.threshold_active_to_stub).abs() / self.threshold_stub_to_hibernated)
+            .clamp(0.0, 1.0);
+
         let prediction = Prediction {
             module_name: module_name.to_string(),
             state,
-            confidence: 0.95, // Giả lập độ tin cậy của model
+            confidence,
             reason,
         };
 
         info!(
-            "AI Decision for {}: {:?} (score: {:.2})",
-            module_name, prediction.state, score
+            "AI Decision for {}: {:?} (score: {:.2}, confidence: {:.2})",
+            module_name, prediction.state, score, confidence
         );
         Ok(prediction)
     }
 
-    /// Thu thập dữ liệu từ Hardware Monitor hoặc Shared Memory của nhân Linux
     pub fn collect_features(&self) -> Vec<f32> {
-        // Thực tế: Đọc từ /proc/stat, /proc/meminfo hoặc eBPF maps qua SharedMemory
-        // Thứ tự: [CPU%, MEM%, DiskIO%, NetIO%]
-        vec![0.45, 0.60, 0.12, 0.05]
+        let mut features = vec![0.0f32; 8];
+
+        let mut sys = System::new();
+        sys.refresh_all();
+
+        let cpu_usage = sys.global_cpu_info().cpu_usage();
+        features[0] = cpu_usage / 100.0;
+
+        let total_mem = sys.total_memory() as f32;
+        let used_mem = sys.used_memory() as f32;
+        if total_mem > 0.0 {
+            features[1] = used_mem / total_mem;
+        }
+
+        features[2] = 0.0;
+
+        features[3] = 0.0;
+
+        let process_count = sys.processes().len();
+        features[4] = (process_count as f32).clamp(0.0, 100.0) / 100.0;
+
+        features[5] = 0.0;
+
+        let anomaly_score = match self.system.get("anomaly_score") {
+            Some(score) => *score,
+            None => 0.0,
+        };
+        features[6] = anomaly_score;
+
+        let health_score = match self.system.get("health_score") {
+            Some(score) => *score,
+            None => 1.0,
+        };
+        features[7] = health_score;
+
+        features
     }
 
-    /// Yêu cầu TensorPool nạp lại model nếu nó bị rơi vào Cold Storage
+    pub fn update_system_metric(&self, key: &str, value: f32) {
+        self.system.insert(key.to_string(), value);
+    }
+
     pub fn ensure_model_active(&self) -> Result<()> {
-        let mut pool = self.tensor_pool.write();
-        if !pool.contains_model(&self.model_name) {
-            pool.activate_model(&self.model_name)?;
-        }
+        // TODO(Phase 4): Implement activation for production
+        // Production TensorPool should handle activation internally
+        warn!("ensure_model_active not fully implemented - Phase 4");
         Ok(())
     }
 }

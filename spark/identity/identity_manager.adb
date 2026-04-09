@@ -1,4 +1,5 @@
-pragma Style_Checks (Off);
+--  SPARK_Mode (Off): Wrapper calls external liboqs library (OQS_SIG_sign/verify)
+--  and uses dynamic memory allocation (malloc/free) which cannot be formally verified by SPARK.
 pragma SPARK_Mode (Off);
 
 with Interfaces.C;

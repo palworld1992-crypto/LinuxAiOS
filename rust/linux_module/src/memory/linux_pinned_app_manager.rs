@@ -2,15 +2,13 @@
 //! Hỗ trợ theo dõi ứng dụng theo tên hoặc PID.
 
 use anyhow::{anyhow, Result};
-use parking_lot::RwLock;
-use std::collections::HashMap;
+use dashmap::DashMap;
 use std::sync::Arc;
-use sysinfo::PidExt; // for as_u32()
+use sysinfo::PidExt;
 use tracing::info;
 
 use crate::main_component::ProcessManager;
 
-/// Thông tin về một ứng dụng được ghim
 #[derive(Debug, Clone)]
 pub struct PinnedApp {
     pub name: String,
@@ -21,7 +19,7 @@ pub struct PinnedApp {
 
 pub struct PinnedAppManager {
     process_mgr: Arc<ProcessManager>,
-    apps: RwLock<HashMap<String, PinnedApp>>,
+    apps: DashMap<String, PinnedApp>,
 }
 
 impl Default for PinnedAppManager {
@@ -34,19 +32,17 @@ impl PinnedAppManager {
     pub fn new() -> Self {
         Self {
             process_mgr: Arc::new(ProcessManager::new()),
-            apps: RwLock::new(HashMap::new()),
+            apps: DashMap::new(),
         }
     }
 
     pub fn new_with_process_mgr(process_mgr: Arc<ProcessManager>) -> Self {
         Self {
             process_mgr,
-            apps: RwLock::new(HashMap::new()),
+            apps: DashMap::new(),
         }
     }
 
-    /// Ghim một ứng dụng (theo tên) vào cgroup và CPU cores.
-    /// Tìm PID đầu tiên của tiến trình có tên khớp.
     pub fn pin_by_name(&self, name: &str, cgroup: &str, cpu_cores: &[usize]) -> Result<()> {
         self.process_mgr.refresh();
         let processes = self.process_mgr.list_all_processes();
@@ -58,7 +54,6 @@ impl PinnedAppManager {
         self.pin_by_pid(target_pid, name, cgroup, cpu_cores)
     }
 
-    /// Ghim một ứng dụng (theo PID) vào cgroup và CPU cores.
     pub fn pin_by_pid(
         &self,
         pid: u32,
@@ -68,15 +63,23 @@ impl PinnedAppManager {
     ) -> Result<()> {
         self.process_mgr.assign_to_cgroup(pid, cgroup)?;
         self.process_mgr.set_cpu_affinity(pid, cpu_cores)?;
+        // Get actual cmdline (as process name) from ProcessManager
+        let cmdline = match self.process_mgr.get_process_cmdline(pid) {
+            Some(cmd) => cmd,
+            None => {
+                // Process not found? This should not happen since we just pinned it
+                return Err(anyhow::anyhow!("Process {} not found for tracking", pid));
+            }
+        };
         self.process_mgr
-            .track_process(pid, name.to_string(), vec![]);
+            .track_process(pid, name.to_string(), cmdline);
         let app = PinnedApp {
             name: name.to_string(),
             pid,
             cgroup: cgroup.to_string(),
             cpu_cores: cpu_cores.to_vec(),
         };
-        self.apps.write().insert(name.to_string(), app);
+        self.apps.insert(name.to_string(), app);
         info!(
             "Pinned app {} (PID={}) to cgroup {} and cores {:?}",
             name, pid, cgroup, cpu_cores
@@ -84,39 +87,35 @@ impl PinnedAppManager {
         Ok(())
     }
 
-    /// Unpin ứng dụng (xóa khỏi quản lý, không kill tiến trình)
     pub fn unpin(&self, name: &str) -> Option<PinnedApp> {
-        let app = self.apps.write().remove(name);
+        let app = self.apps.remove(name).map(|(_, v)| v);
         if let Some(app) = &app {
             info!("Unpinned app {}", app.name);
         }
         app
     }
 
-    /// Lấy thông tin ứng dụng đã ghim
     pub fn get_pinned(&self, name: &str) -> Option<PinnedApp> {
-        self.apps.read().get(name).cloned()
+        self.apps.get(name).map(|r| r.value().clone())
     }
 
-    /// Lấy danh sách tất cả ứng dụng đã ghim
     pub fn list_pinned(&self) -> Vec<PinnedApp> {
-        self.apps.read().values().cloned().collect()
+        self.apps.iter().map(|r| r.value().clone()).collect()
     }
 
-    /// Kiểm tra health của các ứng dụng đã ghim (gọi định kỳ)
     pub fn check_health(&self) -> Result<()> {
         self.process_mgr.check_health()?;
-        let apps = self.apps.read();
-        for app in apps.values() {
-            if !self.process_mgr.process_exists(app.pid) {
-                // Process died, remove from pinned list
-                info!("Pinned app {} (PID={}) died, removing", app.name, app.pid);
-                // We'll remove it but not re-pin automatically; maybe trigger restart?
+        for app in self.apps.iter() {
+            if !self.process_mgr.process_exists(app.value().pid) {
+                info!(
+                    "Pinned app {} (PID={}) died, removing",
+                    app.value().name,
+                    app.value().pid
+                );
             }
         }
-        // Clean up dead apps
-        let mut apps_write = self.apps.write();
-        apps_write.retain(|_, app| self.process_mgr.process_exists(app.pid));
+        self.apps
+            .retain(|_, app| self.process_mgr.process_exists(app.pid));
         Ok(())
     }
 }

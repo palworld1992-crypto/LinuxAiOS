@@ -6,13 +6,68 @@ edition.workspace = true
 [dependencies]
 common = { path = "../common" }
 scc = { path = "../scc" }
+child_tunnel = { path = "../child_tunnel" }
+health_tunnel = { path = "../health_tunnel" }
+transport_tunnel = { path = "../transport_tunnel" }
+master_tunnel = { path = "../master_tunnel" }
+
 anyhow = "1.0"
 serde = { version = "1.0", features = ["derive"] }
 serde_json = "1.0"
 tokio = { version = "1.0", features = ["full"] }
 tracing = "0.1"
-parking_lot = "0.12"
 hex = "0.4"
 rusqlite = { workspace = true }
 sha2 = "0.10"
-# các dependency khác nếu cần (faiss, hnsw, ort, ...) có thể thêm sau
+thiserror = "1.0"
+tonic = "0.11"
+reqwest = { version = "0.12", features = ["json"] }
+regex = "1"
+dashmap = "6.0"
+ringbuf = "0.4"
+evmap = "11.0"
+crossbeam = "0.8"
+crossbeam-utils = "0.8"
+memmap2 = "0.9"
+sysinfo = "0.29"
+rand = { workspace = true }
+rand_distr = { workspace = true }
+hmac = "0.12"
+uuid = { version = "1.0", features = ["v4"] }
+tokio-tungstenite = { version = "0.20", features = ["rustls"] }
+lru = "0.12"
+jsonwebtoken = "9.2"
+axum = "0.7"
+tower = { version = "0.4" }
+tokio-stream = "0.1"
+libloading = "0.8"
+candle-core = { workspace = true }
+candle-nn = { workspace = true }
+tokenizers = { workspace = true }
+ort = "2.0.0-rc.12"
+rayon = "1.10"
+aes = "0.8"
+ctr = "0.9"
+zstd = "0.13"
+nvml-wrapper = "0.10"
+bloom = "0.3"
+chrono = "0.4"
+pyo3 = { version = "0.21", features = ["extension-module"] }
+
+[dev-dependencies]
+tempfile = "3"
+
+[build-dependencies]
+bindgen = "0.69"
+[lints.rust]
+unused = "deny"
+unused_must_use = "deny"
+
+[lints.clippy]
+unwrap_used = "deny"
+expect_used = "deny"
+print_stdout = "deny"
+print_stderr = "deny"
+todo = "deny"
+or_fun_call = "deny"
+disallowed_types = "deny"

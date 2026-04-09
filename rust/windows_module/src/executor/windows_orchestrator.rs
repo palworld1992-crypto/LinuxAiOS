@@ -1,7 +1,7 @@
 //! Executor Orchestrator for Windows Module – manages Wine and KVM executors
 
 use dashmap::DashMap;
-use parking_lot::RwLock;
+use std::sync::atomic::{AtomicU32, AtomicU64, Ordering};
 use thiserror::Error;
 use tracing::info;
 
@@ -32,18 +32,18 @@ pub struct ExecutorInfo {
 
 pub struct ExecutorOrchestrator {
     executors: DashMap<String, ExecutorInfo>,
-    active_executor: RwLock<Option<String>>,
-    wine_exe: RwLock<Option<std::process::Child>>,
-    kvm_handle: RwLock<Option<u32>>,
+    active_executor: AtomicU64,
+    wine_pid: AtomicU32,
+    kvm_pid: AtomicU32,
 }
 
 impl ExecutorOrchestrator {
     pub fn new() -> Self {
         Self {
             executors: DashMap::new(),
-            active_executor: RwLock::new(None),
-            wine_exe: RwLock::new(None),
-            kvm_handle: RwLock::new(None),
+            active_executor: AtomicU64::new(0),
+            wine_pid: AtomicU32::new(0),
+            kvm_pid: AtomicU32::new(0),
         }
     }
 
@@ -67,7 +67,9 @@ impl ExecutorOrchestrator {
         };
 
         self.executors.insert(id.to_string(), info);
-        *self.active_executor.write() = Some(id.to_string());
+
+        let id_ptr = id.as_ptr() as u64;
+        self.active_executor.store(id_ptr, Ordering::Relaxed);
 
         info!("Started executor {} with PID {}", id, pid);
         Ok(pid)
@@ -90,14 +92,15 @@ impl ExecutorOrchestrator {
             .map_err(|e| OrchestratorError::StartFailed(e.to_string()))?;
 
         let pid = child.id();
-        *self.wine_exe.write() = Some(child);
+        self.wine_pid.store(pid, Ordering::Relaxed);
 
         Ok(pid)
     }
 
     fn start_kvm(&self, config: &ExecutorConfig) -> Result<u32, OrchestratorError> {
-        if let Some(handle) = *self.kvm_handle.read() {
-            return Ok(handle);
+        let current_kvm = self.kvm_pid.load(Ordering::Relaxed);
+        if current_kvm != 0 {
+            return Ok(current_kvm);
         }
 
         let mut cmd = std::process::Command::new("qemu-system-x86_64");
@@ -132,61 +135,52 @@ impl ExecutorOrchestrator {
         } else if config.kvm_use_virtio {
             cmd.arg("-vga").arg("virtio");
             cmd.arg("-display").arg("none");
+        } else {
+            cmd.arg("-vga").arg("std");
         }
 
         cmd.arg("-nographic");
+        cmd.arg("-serial").arg("stdio");
 
         let child = cmd
             .spawn()
             .map_err(|e| OrchestratorError::StartFailed(e.to_string()))?;
-        let pid = child.id();
 
-        *self.kvm_handle.write() = Some(pid);
+        let pid = child.id();
+        self.kvm_pid.store(pid, Ordering::Relaxed);
 
         Ok(pid)
     }
 
     pub fn stop_executor(&self, id: &str) -> Result<(), OrchestratorError> {
-        if let Some(info) = self.executors.get(id) {
-            if let Some(_pid) = info.pid {
-                if let ExecutorType::Wine = info.exe_type {
-                    if let Some(ref mut child) = *self.wine_exe.write() {
-                        let _ = child.kill();
-                    }
-                } else {
-                    if let Some(handle) = *self.kvm_handle.read() {
-                        // SAFETY: handle is a valid PID from a child process we spawned via qemu.
-                        // SIGTERM requests graceful shutdown and is safe to send to our own child.
-                        let _ = unsafe { libc::kill(handle as i32, libc::SIGTERM) };
-                    }
-                }
-            }
+        let mut info = self
+            .executors
+            .get_mut(id)
+            .ok_or_else(|| OrchestratorError::NotFound(id.to_string()))?;
 
-            let mut info = info.clone();
-            info.active = false;
-            self.executors.insert(id.to_string(), info);
-
-            info!("Stopped executor {}", id);
-            Ok(())
-        } else {
-            Err(OrchestratorError::NotFound(id.to_string()))
+        if let Some(pid) = info.pid {
+            let _ = std::process::Command::new("kill")
+                .arg(pid.to_string())
+                .output();
         }
+
+        info.active = false;
+        info.pid = None;
+
+        Ok(())
     }
 
-    pub fn get_executor(&self, id: &str) -> Option<ExecutorInfo> {
-        self.executors.get(id).map(|r| r.clone())
-    }
-
-    pub fn list_active(&self) -> Vec<ExecutorInfo> {
-        self.executors
-            .iter()
-            .filter(|r| r.value().active)
-            .map(|r| r.clone())
-            .collect()
-    }
-
-    pub fn get_active(&self) -> Option<String> {
-        self.active_executor.read().clone()
+    pub fn get_active_executor(&self) -> Option<String> {
+        let ptr = self.active_executor.load(Ordering::Relaxed);
+        if ptr == 0 {
+            return None;
+        }
+        unsafe {
+            let s = std::slice::from_raw_parts(ptr as *const u8, 20);
+            std::str::from_utf8(s)
+                .ok()
+                .map(|s| s.trim_end_matches('\0').to_string())
+        }
     }
 
     pub fn switch_executor(&self, from_id: &str, to_id: &str) -> Result<(), OrchestratorError> {
@@ -198,8 +192,7 @@ impl ExecutorOrchestrator {
     fn current_timestamp() -> u64 {
         std::time::SystemTime::now()
             .duration_since(std::time::UNIX_EPOCH)
-            .map(|d| d.as_millis() as u64)
-            .unwrap_or(0)
+            .map_or(0, |d| d.as_millis() as u64)
     }
 }
 

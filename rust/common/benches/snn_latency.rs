@@ -169,7 +169,7 @@ fn bench_spike_processing(c: &mut Criterion) {
             let _ = rb.push(SpikeEvent {
                 pid: 1234,
                 vaddr: 0x7f000000 + i * 4096,
-                timestamp_ns: i as u64,
+                timestamp_ns: i,
             });
         }
     }

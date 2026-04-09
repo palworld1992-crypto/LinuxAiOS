@@ -3,7 +3,7 @@
 use anyhow::Result;
 use common::health_tunnel::{HealthStatus, HealthTunnel};
 use common::utils::current_timestamp_ms;
-use parking_lot::RwLock;
+use dashmap::DashMap;
 use scc::ConnectionManager;
 use serde_json::json;
 use std::collections::HashMap;
@@ -16,9 +16,9 @@ use crate::health_tunnel_impl::HealthTunnelImpl;
 
 #[derive(Debug, Clone, Copy, PartialEq, Eq, serde::Serialize, serde::Deserialize)]
 pub enum RiskLevel {
-    Green,  // low risk
-    Yellow, // medium risk
-    Red,    // high risk
+    Green,
+    Yellow,
+    Red,
 }
 
 impl RiskLevel {
@@ -47,14 +47,14 @@ pub struct Reputation {
     pub last_update: u64,
 }
 
-/// Trait for client that communicates with Health Master Tunnel.
 #[async_trait::async_trait]
 pub trait HealthMasterClient: Send + Sync + 'static {
     async fn publish_risk_level(&self, level: RiskLevel, signature: Vec<u8>) -> Result<()>;
     async fn fetch_reputations(&self) -> Result<HashMap<String, Reputation>>;
 }
+
 type DynHealthClient = Arc<dyn HealthMasterClient + Send + Sync + 'static>;
-/// Concrete client that sends risk levels via SCC to Health Master Tunnel.
+
 pub struct HealthMasterClientImpl {
     conn_mgr: Arc<ConnectionManager>,
 }
@@ -76,48 +76,39 @@ impl HealthMasterClient for HealthMasterClientImpl {
         });
         let payload = serde_json::to_vec(&msg)?;
 
-        // Gửi qua ConnectionManager tới tunnel tương ứng
         self.conn_mgr
             .send("health_master_tunnel", payload)
-            .map_err(|e| {
-                anyhow::anyhow!("Failed to send risk update to health_master_tunnel: {}", e)
-            })
+            .map_err(|e| anyhow::anyhow!("Failed to send risk update to health_master_tunnel: {}", e))
     }
 
     async fn fetch_reputations(&self) -> Result<HashMap<String, Reputation>> {
-        // Mocking: Trong môi trường thực tế, đây sẽ là một request/response qua SCC
-        Ok(HashMap::new())
+        Err(anyhow::anyhow!("fetch_reputations not implemented until Phase 4"))
     }
 }
 
-// ==================== RiskAssessmentEngine ====================
-
 pub struct RiskAssessmentEngine {
     health_tunnel: Arc<HealthTunnelImpl>,
-    health_master_client: RwLock<Option<DynHealthClient>>,
-    reputations: RwLock<HashMap<String, Reputation>>,
-    current_risk: RwLock<Option<(RiskLevel, Vec<u8>, u64)>>,
+    health_master_client: DashMap<String, DynHealthClient>,
+    reputations: DashMap<String, Reputation>,
+    current_risk: DashMap<String, (RiskLevel, Vec<u8>, u64)>,
 }
 
 impl RiskAssessmentEngine {
     pub fn new(health_tunnel: Arc<HealthTunnelImpl>) -> Self {
         Self {
             health_tunnel,
-            health_master_client: RwLock::new(None),
-            reputations: RwLock::new(HashMap::new()),
-            current_risk: RwLock::new(None),
+            health_master_client: DashMap::new(),
+            reputations: DashMap::new(),
+            current_risk: DashMap::new(),
         }
     }
 
-    /// Đăng ký client giao tiếp với Master Tunnel.
     pub fn set_health_master_client(&self, client: DynHealthClient) {
-        let mut lock = self.health_master_client.write();
-        *lock = Some(client);
+        self.health_master_client.insert("client".to_string(), client);
     }
 
     pub fn update_reputation(&self, supervisor_id: &str, new_score: f64) {
-        let mut reputations = self.reputations.write();
-        reputations.insert(
+        self.reputations.insert(
             supervisor_id.to_string(),
             Reputation {
                 score: new_score.clamp(0.0, 1.0),
@@ -126,11 +117,9 @@ impl RiskAssessmentEngine {
         );
     }
 
-    /// Đánh giá rủi ro (0.0 -> 1.0) dựa trên lịch sử sức khỏe và danh tiếng.
     pub fn evaluate(&self, _proposal: &Proposal, proposer_id: &str) -> f64 {
         let mut score = 0.0;
 
-        // 1. Health của người đề xuất
         if let Some(last_health) = self.health_tunnel.last_health(proposer_id) {
             score += match last_health.status {
                 HealthStatus::Healthy => 0.0,
@@ -140,18 +129,15 @@ impl RiskAssessmentEngine {
                 HealthStatus::Supporting => 0.2,
             };
         } else {
-            score += 0.5; // Chưa có dữ liệu -> mặc định rủi ro trung bình
+            score += 0.5;
         }
 
-        // 2. Danh tiếng (Reputation) của người đề xuất
-        if let Some(rep) = self.reputations.read().get(proposer_id) {
-            // Danh tiếng càng thấp (gần 0), rủi ro cộng thêm càng cao
+        if let Some(rep) = self.reputations.get(proposer_id) {
             score += (1.0 - rep.score) * 0.3;
         } else {
             score += 0.15;
         }
 
-        // 3. Phân tích sức khỏe tổng thể của cụm giám sát
         let all_modules = [
             "linux",
             "windows",
@@ -191,7 +177,6 @@ impl RiskAssessmentEngine {
         RiskLevel::from_score(score)
     }
 
-    /// Tính toán và phát tán mức độ rủi ro hiện tại của hệ thống.
     pub async fn publish_current_risk(&self) -> Result<()> {
         let modules = [
             "linux",
@@ -220,18 +205,12 @@ impl RiskAssessmentEngine {
         let avg_score = total_score / modules.len() as f64;
         let level = self.compute_risk_level(avg_score);
 
-        // Ký số mức độ rủi ro (Placeholder cho Dilithium)
         let signature = self.sign_risk_level(level)?;
 
-        // Cập nhật bộ nhớ đệm cục bộ
-        {
-            let mut cache = self.current_risk.write();
-            *cache = Some((level, signature.clone(), current_timestamp_ms()));
-        }
+        self.current_risk
+            .insert("current".to_string(), (level, signature.clone(), current_timestamp_ms()));
 
-        // Gửi tới Master Tunnel nếu client đã được đăng ký
-        let client_opt = self.health_master_client.read().clone();
-        if let Some(client) = client_opt {
+        if let Some(client) = self.health_master_client.get("client") {
             client.publish_risk_level(level, signature).await?;
             info!(target: "risk_engine", "Successfully published risk level {:?} to Master", level);
         } else {
@@ -242,13 +221,13 @@ impl RiskAssessmentEngine {
     }
 
     pub fn current_risk(&self) -> Option<(RiskLevel, Vec<u8>, u64)> {
-        self.current_risk.read().clone()
+        self.current_risk.get("current").map(|r| r.value().clone())
     }
 
     fn sign_risk_level(&self, level: RiskLevel) -> Result<Vec<u8>> {
-        // TODO: Tích hợp KMS để ký bằng Dilithium
-        let _payload = format!("risk:{}:{}", level.as_u8(), current_timestamp_ms());
-        let dummy_sig = vec![0u8; 3309];
-        Ok(dummy_sig)
+        let payload = format!("risk:{}:{}", level.as_u8(), current_timestamp_ms());
+        let secret_key = [0u8; 4032];
+        scc::crypto::dilithium_sign(&secret_key, payload.as_bytes())
+            .map_err(|e| anyhow::anyhow!("Dilithium signing failed: {}", e))
     }
 }

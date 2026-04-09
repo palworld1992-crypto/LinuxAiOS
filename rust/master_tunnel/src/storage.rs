@@ -4,18 +4,19 @@
 use crate::blockchain::Block;
 use crate::consensus::RaftTypeConfigImpl;
 use async_trait::async_trait;
+use dashmap::DashMap;
 use openraft::{
     storage::{LogState, RaftLogReader, RaftSnapshotBuilder, RaftStorage},
     AnyError, CommittedLeaderId, Entry, EntryPayload, ErrorSubject, ErrorVerb, LogId, Snapshot,
     SnapshotMeta, StorageError, StorageIOError, StoredMembership, Vote,
 };
-use parking_lot::RwLock;
 use r2d2_sqlite::SqliteConnectionManager;
 use rusqlite::{params, OptionalExtension};
 use serde::{Deserialize, Serialize};
 use std::fmt::Debug;
 use std::io::Cursor;
 use std::ops::RangeBounds;
+use std::sync::atomic::{AtomicU64, Ordering};
 use std::sync::Arc;
 use tokio::io::AsyncReadExt;
 
@@ -35,7 +36,7 @@ impl StateMachine {
         Self {
             last_applied_log: None,
             last_membership: StoredMembership::default(),
-            ledger_blocks: Vec::new(),
+            ledger_blocks: vec![],
         }
     }
 }
@@ -43,7 +44,10 @@ impl StateMachine {
 #[derive(Clone)]
 pub struct RaftStorageImpl {
     pool: r2d2::Pool<SqliteConnectionManager>,
-    state: Arc<RwLock<StateMachine>>,
+    last_applied_log: Arc<AtomicU64>,
+    last_membership: Arc<DashMap<u64, StoredMembership<NodeId, ()>>>,
+    ledger_blocks: Arc<DashMap<u64, Block>>,
+    ledger_len: Arc<AtomicU64>,
     node_id: NodeId,
 }
 
@@ -73,7 +77,10 @@ impl RaftStorageImpl {
         )?;
         Ok(Self {
             pool,
-            state: Arc::new(RwLock::new(StateMachine::new())),
+            last_applied_log: Arc::new(AtomicU64::new(0)),
+            last_membership: Arc::new(DashMap::new()),
+            ledger_blocks: Arc::new(DashMap::new()),
+            ledger_len: Arc::new(AtomicU64::new(0)),
             node_id,
         })
     }
@@ -225,28 +232,45 @@ impl RaftStorage<RaftTypeConfigImpl> for RaftStorageImpl {
     async fn last_applied_state(
         &mut self,
     ) -> Result<(Option<LogId<NodeId>>, StoredMembership<NodeId, ()>), StorageError<NodeId>> {
-        let state = self.state.read();
-        Ok((state.last_applied_log, state.last_membership.clone()))
+        let term = self.last_applied_log.load(Ordering::SeqCst);
+        let last_log_id = if term > 0 {
+            Some(LogId::new(
+                CommittedLeaderId::new(term, self.node_id),
+                self.last_applied_log.load(Ordering::SeqCst),
+            ))
+        } else {
+            None
+        };
+        let membership = self
+            .last_membership
+            .get(&0)
+            .map(|r| r.value().clone())
+            .map_or(StoredMembership::default(), |v| v);
+        Ok((last_log_id, membership))
     }
 
     async fn apply_to_state_machine(
         &mut self,
         entries: &[Entry<RaftTypeConfigImpl>],
     ) -> Result<Vec<LogData>, StorageError<NodeId>> {
-        let mut state = self.state.write();
-        let mut res = Vec::new();
+        let mut res = vec![];
         for entry in entries {
-            state.last_applied_log = Some(entry.log_id);
+            let index = entry.log_id.index;
+            let term = entry.log_id.leader_id.term;
+            self.last_applied_log.store(index.max(term), Ordering::SeqCst);
+
             match &entry.payload {
                 EntryPayload::Normal(data) => {
                     if let Ok(block) = bincode::deserialize::<Block>(data) {
-                        state.ledger_blocks.push(block);
+                        let height = self.ledger_len.load(Ordering::SeqCst);
+                        self.ledger_blocks.insert(height, block);
+                        self.ledger_len.fetch_add(1, Ordering::SeqCst);
                     }
                     res.push(data.clone());
                 }
                 EntryPayload::Membership(membership) => {
                     let stored = StoredMembership::new(Some(entry.log_id), membership.clone());
-                    state.last_membership = stored.clone();
+                    self.last_membership.insert(0, stored.clone());
 
                     let membership_bytes = bincode::serialize(&stored).map_err(to_storage_error)?;
                     let conn = self.pool.get().map_err(to_storage_error)?;
@@ -265,7 +289,7 @@ impl RaftStorage<RaftTypeConfigImpl> for RaftStorageImpl {
     async fn begin_receiving_snapshot(
         &mut self,
     ) -> Result<Box<SnapshotData>, StorageError<NodeId>> {
-        Ok(Box::new(Cursor::new(Vec::new())))
+        Ok(Box::new(Cursor::new(vec![])))
     }
 
     async fn install_snapshot(
@@ -274,18 +298,25 @@ impl RaftStorage<RaftTypeConfigImpl> for RaftStorageImpl {
         data: Box<SnapshotData>,
     ) -> Result<(), StorageError<NodeId>> {
         let mut data = *data;
-        let mut buf = Vec::new();
+        let mut buf = vec![];
         data.read_to_end(&mut buf).await.map_err(to_storage_error)?;
         if buf.is_empty() {
             return Ok(());
         }
         let new_state: StateMachine = bincode::deserialize(&buf).map_err(to_storage_error)?;
-        let mut state = self.state.write();
-        *state = new_state;
-        state.last_applied_log = meta.last_log_id;
 
-        // SỬA: Gán trực tiếp vì last_membership bây giờ là StoredMembership, không phải Option
-        state.last_membership = meta.last_membership.clone();
+        if let Some(log_id) = meta.last_log_id {
+            self.last_applied_log
+                .store(log_id.index.max(log_id.leader_id.term), Ordering::SeqCst);
+        }
+        self.last_membership.insert(0, meta.last_membership.clone());
+
+        self.ledger_blocks.clear();
+        for (i, block) in new_state.ledger_blocks.into_iter().enumerate() {
+            self.ledger_blocks.insert(i as u64, block);
+        }
+        self.ledger_len
+            .store(self.ledger_blocks.len() as u64, Ordering::SeqCst);
 
         Ok(())
     }
@@ -302,17 +333,38 @@ impl RaftSnapshotBuilder<RaftTypeConfigImpl> for RaftStorageImpl {
     async fn build_snapshot(
         &mut self,
     ) -> Result<Snapshot<RaftTypeConfigImpl>, StorageError<NodeId>> {
-        let state = self.state.read();
-        let last_log_id = state
+        let last_log_id = self
             .last_applied_log
-            .ok_or_else(|| to_storage_error("No logs applied to build snapshot"))?;
-        let data = bincode::serialize(&*state).map_err(to_storage_error)?;
-        let snapshot_id = format!("{}-{}", last_log_id.leader_id.term, last_log_id.index);
+            .load(Ordering::SeqCst);
+        if last_log_id == 0 {
+            return Err(to_storage_error("No logs applied to build snapshot"));
+        }
+        let membership = self
+            .last_membership
+            .get(&0)
+            .map(|r| r.value().clone())
+            .map_or(StoredMembership::default(), |v| v);
+        let log_id = LogId::new(
+            CommittedLeaderId::new(last_log_id, self.node_id),
+            last_log_id,
+        );
+
+        let ledger_blocks: Vec<Block> = self
+            .ledger_blocks
+            .iter()
+            .map(|r| r.value().clone())
+            .collect();
+        let state = StateMachine {
+            last_applied_log: Some(log_id),
+            last_membership: membership.clone(),
+            ledger_blocks,
+        };
+        let data = bincode::serialize(&state).map_err(to_storage_error)?;
+        let snapshot_id = format!("{}-{}", last_log_id, last_log_id);
         Ok(Snapshot {
             meta: SnapshotMeta {
-                last_log_id: Some(last_log_id),
-                // SỬA: Bỏ Some(...) vì last_membership là kiểu bắt buộc
-                last_membership: state.last_membership.clone(),
+                last_log_id: Some(log_id),
+                last_membership: membership,
                 snapshot_id,
             },
             snapshot: Box::new(Cursor::new(data)),

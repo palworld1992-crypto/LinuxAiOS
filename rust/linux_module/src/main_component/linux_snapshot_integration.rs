@@ -3,6 +3,7 @@
 
 use anyhow::{anyhow, Result};
 use common::health_tunnel::{HealthRecord, HealthStatus, HealthTunnel};
+use dashmap::DashMap;
 use std::path::Path;
 use std::sync::Arc;
 use tracing::{error, info, warn};
@@ -11,7 +12,7 @@ use crate::main_component::snapshot_manager::SnapshotManager;
 
 pub struct SnapshotIntegration {
     snapshot_mgr: Arc<SnapshotManager>,
-    health_tunnel: Option<Arc<dyn HealthTunnel + Send + Sync>>,
+    health_tunnel: DashMap<(), Arc<dyn HealthTunnel + Send + Sync>>,
     auto_snapshot: bool,
     max_snapshots_before_alert: usize,
 }
@@ -20,14 +21,14 @@ impl SnapshotIntegration {
     pub fn new(snapshot_mgr: Arc<SnapshotManager>) -> Self {
         Self {
             snapshot_mgr,
-            health_tunnel: None,
+            health_tunnel: DashMap::new(),
             auto_snapshot: true,
             max_snapshots_before_alert: 10,
         }
     }
 
-    pub fn set_health_tunnel(&mut self, tunnel: Arc<dyn HealthTunnel + Send + Sync>) {
-        self.health_tunnel = Some(tunnel);
+    pub fn set_health_tunnel(&self, tunnel: Arc<dyn HealthTunnel + Send + Sync>) {
+        self.health_tunnel.insert((), tunnel);
     }
 
     pub fn set_auto_snapshot(&mut self, enabled: bool) {
@@ -111,20 +112,27 @@ impl SnapshotIntegration {
     }
 
     fn record_snapshot_event(&self, event_type: &str, path: &Path) -> Result<()> {
-        if let Some(ref tunnel) = self.health_tunnel {
-            let record = HealthRecord {
-                module_id: "linux_main".to_string(),
-                timestamp: std::time::SystemTime::now()
-                    .duration_since(std::time::UNIX_EPOCH)
-                    .map(|d| d.as_secs())
-                    .unwrap_or(0),
-                status: HealthStatus::Healthy,
-                potential: 1.0,
-                details: format!("snapshot_{}:{:?}", event_type, path).into_bytes(),
-            };
-            if let Err(e) = tunnel.record_health(record) {
-                error!("Failed to record snapshot event: {}", e);
+        let tunnel = match self.health_tunnel.get(&()) {
+            Some(t) => t.value().clone(),
+            None => return Ok(()),
+        };
+
+        let timestamp = match std::time::SystemTime::now().duration_since(std::time::UNIX_EPOCH) {
+            Ok(d) => d.as_secs(),
+            Err(e) => {
+                tracing::warn!("System clock before UNIX_EPOCH: {}", e);
+                0
             }
+        };
+        let record = HealthRecord {
+            module_id: "linux_main".to_string(),
+            timestamp,
+            status: HealthStatus::Healthy,
+            potential: 1.0,
+            details: format!("snapshot_{}:{:?}", event_type, path).into_bytes(),
+        };
+        if let Err(e) = tunnel.record_health(record) {
+            error!("Failed to record snapshot event: {}", e);
         }
         Ok(())
     }

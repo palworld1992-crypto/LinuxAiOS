@@ -1,0 +1,308 @@
+warning: unnecessary `unsafe` block
+  --> scc/src/translator/zero_copy.rs:36:9
+   |
+36 |         unsafe { mmap.flush().ok()? };
+   |         ^^^^^^ unnecessary `unsafe` block
+   |
+   = note: `#[warn(unused_unsafe)]` (part of `#[warn(unused)]`) on by default
+
+warning: `scc` (lib) generated 1 warning
+warning: variable does not need to be mutable
+  --> health_tunnel/src/wrapper.rs:16:13
+   |
+16 |         let mut ledger = HealthTunnelLedger::new();
+   |             ----^^^^^^
+   |             |
+   |             help: remove this `mut`
+   |
+   = note: `#[warn(unused_mut)]` (part of `#[warn(unused)]`) on by default
+
+warning: variable does not need to be mutable
+  --> health_tunnel/src/lib.rs:23:13
+   |
+23 |         let mut ledger = HealthTunnelLedger::new();
+   |             ----^^^^^^
+   |             |
+   |             help: remove this `mut`
+
+warning: `health_tunnel` (lib) generated 2 warnings (run `cargo fix --lib -p health_tunnel` to apply 2 suggestions)
+    Checking child_tunnel v0.1.0 (/home/ToHung/LinusAiOS/rust/child_tunnel)
+    Checking system_host v0.1.0 (/home/ToHung/LinusAiOS/rust/system_host)
+    Checking sih v0.1.0 (/home/ToHung/LinusAiOS/rust/sih)
+warning: variable does not need to be mutable
+  --> windows_module/src/assistant/windows_assistant.rs:39:13
+   |
+39 |         let mut device_map = DashMap::new();
+   |             ----^^^^^^^^^^
+   |             |
+   |             help: remove this `mut`
+   |
+   = note: `#[warn(unused_mut)]` (part of `#[warn(unused)]`) on by default
+
+warning: variable does not need to be mutable
+  --> windows_module/src/assistant/windows_assistant.rs:41:13
+   |
+41 |         let mut weights_map = DashMap::new();
+   |             ----^^^^^^^^^^^
+   |             |
+   |             help: remove this `mut`
+
+warning: variable does not need to be mutable
+  --> windows_module/src/assistant/windows_assistant.rs:43:13
+   |
+43 |         let mut bias_map = DashMap::new();
+   |             ----^^^^^^^^
+   |             |
+   |             help: remove this `mut`
+
+warning: variable does not need to be mutable
+  --> windows_module/src/profiling/windows_api_profiler.rs:93:13
+   |
+93 |         let mut external_tx_map = DashMap::new();
+   |             ----^^^^^^^^^^^^^^^
+   |             |
+   |             help: remove this `mut`
+
+warning: variable does not need to be mutable
+   --> windows_module/src/profiling/windows_api_profiler.rs:141:13
+    |
+141 |         let mut min_lat = f64::from_bits(entry.min_latency_ms.load(Ordering::Relaxed));
+    |             ----^^^^^^^
+    |             |
+    |             help: remove this `mut`
+
+warning: variable does not need to be mutable
+   --> windows_module/src/profiling/windows_api_profiler.rs:149:13
+    |
+149 |         let mut max_lat = f64::from_bits(entry.max_latency_ms.load(Ordering::Relaxed));
+    |             ----^^^^^^^
+    |             |
+    |             help: remove this `mut`
+
+warning: `windows_module` (lib) generated 6 warnings (run `cargo fix --lib -p windows_module` to apply 6 suggestions)
+    Checking health_master_tunnel v0.1.0 (/home/ToHung/LinusAiOS/rust/health_master_tunnel)
+    Checking aios-fuzz v0.1.0 (/home/ToHung/LinusAiOS/rust/fuzz)
+error[E0433]: failed to resolve: use of undeclared type `Ordering`
+   --> sih/src/dkss/content_validator.rs:272:71
+    |
+272 |         let threshold = f32::from_bits(self.similarity_threshold.load(Ordering::Relaxed));
+    |                                                                       ^^^^^^^^ use of undeclared type `Ordering`
+    |
+help: consider importing one of these enums
+    |
+  3 + use std::cmp::Ordering;
+    |
+  3 + use std::sync::atomic::Ordering;
+    |
+
+error[E0433]: failed to resolve: use of undeclared type `Ordering`
+   --> sih/src/dkss/content_validator.rs:333:57
+    |
+333 |             .store(threshold.clamp(0.0, 1.0).to_bits(), Ordering::Relaxed);
+    |                                                         ^^^^^^^^ use of undeclared type `Ordering`
+    |
+help: consider importing one of these enums
+    |
+  3 + use std::cmp::Ordering;
+    |
+  3 + use std::sync::atomic::Ordering;
+    |
+
+warning: unexpected `cfg` condition value: `faiss`
+  --> sih/src/knowledge/vector_store.rs:39:15
+   |
+39 |         #[cfg(feature = "faiss")]
+   |               ^^^^^^^^^^^^^^^^^ help: remove the condition
+   |
+   = note: no expected values for `feature`
+   = help: consider adding `faiss` as a feature in `Cargo.toml`
+   = note: see <https://doc.rust-lang.org/nightly/rustc/check-cfg/cargo-specifics.html> for more information about checking conditional configuration
+   = note: `#[warn(unexpected_cfgs)]` on by default
+
+error[E0599]: no variant or associated item named `Internal` found for enum `RecommenderError` in the current scope
+   --> sih/src/ai/recommender.rs:337:46
+    |
+337 |             .ok_or_else(|| RecommenderError::Internal("context missing".to_string()))?;
+    |                                              ^^^^^^^^ variant or associated item not found in `RecommenderError`
+    |
+   ::: sih/src/errors.rs:30:1
+    |
+ 30 | pub enum RecommenderError {
+    | ------------------------- variant or associated item `Internal` not found for this enum
+
+error[E0308]: mismatched types
+   --> sih/src/ai/sih_rl_policy.rs:23:52
+    |
+ 23 |             current_action: Arc::new(DashMap::from([((), None)])),
+    |                                      ------------- ^^^^^^^^^^^^ expected `DashMap<(), Option<PolicyAction>>`, found `[((), Option<_>); 1]`
+    |                                      |
+    |                                      arguments to this function are incorrect
+    |
+    = note: expected struct `DashMap<(), std::option::Option<PolicyAction>>`
+                found array `[((), std::option::Option<_>); 1]`
+note: associated function defined here
+   --> /home/ToHung/.rustup/toolchains/stable-x86_64-unknown-linux-gnu/lib/rustlib/src/rust/library/core/src/convert/mod.rs:592:8
+    |
+592 |     fn from(value: T) -> Self;
+    |        ^^^^
+
+error[E0308]: mismatched types
+   --> sih/src/dkss/trust_scoring.rs:66:51
+    |
+ 66 |             feature_stats: Arc::new(DashMap::from([((), FeatureStats::default())])),
+    |                                     ------------- ^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^ expected `DashMap<(), FeatureStats>`, found `[((), FeatureStats); 1]`
+    |                                     |
+    |                                     arguments to this function are incorrect
+    |
+    = note: expected struct `DashMap<(), FeatureStats>`
+                found array `[((), FeatureStats); 1]`
+note: associated function defined here
+   --> /home/ToHung/.rustup/toolchains/stable-x86_64-unknown-linux-gnu/lib/rustlib/src/rust/library/core/src/convert/mod.rs:592:8
+    |
+592 |     fn from(value: T) -> Self;
+    |        ^^^^
+
+error[E0599]: no variant or associated item named `Internal` found for enum `errors::TrustScoringError` in the current scope
+  --> sih/src/dkss/trust_scoring.rs:96:47
+   |
+96 |             .ok_or_else(|| TrustScoringError::Internal("weight 0 missing".to_string()))?;
+   |                                               ^^^^^^^^ variant or associated item not found in `errors::TrustScoringError`
+   |
+  ::: sih/src/errors.rs:92:1
+   |
+92 | pub enum TrustScoringError {
+   | -------------------------- variant or associated item `Internal` not found for this enum
+
+error[E0599]: no variant or associated item named `Internal` found for enum `errors::TrustScoringError` in the current scope
+   --> sih/src/dkss/trust_scoring.rs:100:47
+    |
+100 |             .ok_or_else(|| TrustScoringError::Internal("weight 1 missing".to_string()))?;
+    |                                               ^^^^^^^^ variant or associated item not found in `errors::TrustScoringError`
+    |
+   ::: sih/src/errors.rs:92:1
+    |
+ 92 | pub enum TrustScoringError {
+    | -------------------------- variant or associated item `Internal` not found for this enum
+
+error[E0599]: no variant or associated item named `Internal` found for enum `errors::TrustScoringError` in the current scope
+   --> sih/src/dkss/trust_scoring.rs:104:47
+    |
+104 |             .ok_or_else(|| TrustScoringError::Internal("weight 2 missing".to_string()))?;
+    |                                               ^^^^^^^^ variant or associated item not found in `errors::TrustScoringError`
+    |
+   ::: sih/src/errors.rs:92:1
+    |
+ 92 | pub enum TrustScoringError {
+    | -------------------------- variant or associated item `Internal` not found for this enum
+
+error[E0599]: no variant or associated item named `Internal` found for enum `errors::TrustScoringError` in the current scope
+   --> sih/src/dkss/trust_scoring.rs:108:47
+    |
+108 |             .ok_or_else(|| TrustScoringError::Internal("weight 3 missing".to_string()))?;
+    |                                               ^^^^^^^^ variant or associated item not found in `errors::TrustScoringError`
+    |
+   ::: sih/src/errors.rs:92:1
+    |
+ 92 | pub enum TrustScoringError {
+    | -------------------------- variant or associated item `Internal` not found for this enum
+
+error[E0599]: no variant or associated item named `Internal` found for enum `errors::TrustScoringError` in the current scope
+   --> sih/src/dkss/trust_scoring.rs:112:47
+    |
+112 |             .ok_or_else(|| TrustScoringError::Internal("weight 4 missing".to_string()))?;
+    |                                               ^^^^^^^^ variant or associated item not found in `errors::TrustScoringError`
+    |
+   ::: sih/src/errors.rs:92:1
+    |
+ 92 | pub enum TrustScoringError {
+    | -------------------------- variant or associated item `Internal` not found for this enum
+
+error[E0599]: no variant or associated item named `Internal` found for enum `errors::TrustScoringError` in the current scope
+   --> sih/src/dkss/trust_scoring.rs:117:47
+    |
+117 |             .ok_or_else(|| TrustScoringError::Internal("stats missing".to_string()))?;
+    |                                               ^^^^^^^^ variant or associated item not found in `errors::TrustScoringError`
+    |
+   ::: sih/src/errors.rs:92:1
+    |
+ 92 | pub enum TrustScoringError {
+    | -------------------------- variant or associated item `Internal` not found for this enum
+
+error[E0599]: no method named `write` found for struct `Arc<DashMap<usize, f32>>` in the current scope
+   --> sih/src/dkss/trust_scoring.rs:242:46
+    |
+242 |         let mut weights = self.model_weights.write();
+    |                                              ^^^^^ method not found in `Arc<DashMap<usize, f32>>`
+
+error[E0599]: no method named `write` found for struct `Arc<DashMap<(), FeatureStats>>` in the current scope
+   --> sih/src/dkss/trust_scoring.rs:268:44
+    |
+268 |         let mut stats = self.feature_stats.write();
+    |                                            ^^^^^ method not found in `Arc<DashMap<(), FeatureStats>>`
+
+error[E0308]: mismatched types
+   --> sih/src/dkss/content_validator.rs:93:54
+    |
+ 93 |             toxicity_weights: Arc::new(DashMap::from([((), ToxicityWeights::default_weights())])),
+    |                                        ------------- ^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^ expected `DashMap<(), ToxicityWeights>`, found `[((), ToxicityWeights); 1]`
+    |                                        |
+    |                                        arguments to this function are incorrect
+    |
+    = note: expected struct `DashMap<(), ToxicityWeights>`
+                found array `[((), ToxicityWeights); 1]`
+note: associated function defined here
+   --> /home/ToHung/.rustup/toolchains/stable-x86_64-unknown-linux-gnu/lib/rustlib/src/rust/library/core/src/convert/mod.rs:592:8
+    |
+592 |     fn from(value: T) -> Self;
+    |        ^^^^
+
+error[E0599]: no variant or associated item named `Internal` found for enum `errors::ContentValidatorError` in the current scope
+   --> sih/src/dkss/content_validator.rs:129:36
+    |
+129 |             ContentValidatorError::Internal("toxicity weights missing".to_string())
+    |                                    ^^^^^^^^ variant or associated item not found in `errors::ContentValidatorError`
+    |
+   ::: sih/src/errors.rs:100:1
+    |
+100 | pub enum ContentValidatorError {
+    | ------------------------------ variant or associated item `Internal` not found for this enum
+
+error[E0282]: type annotations needed
+   --> sih/src/dkss/content_validator.rs:139:22
+    |
+139 |             if lower.contains(keyword) {
+    |                      ^^^^^^^^ cannot infer type of the type parameter `P` declared on the method `contains`
+140 |                 score += weight;
+141 |                 categories.push(keyword.clone());
+    |                                 ------- type must be known at this point
+    |
+help: consider specifying the generic argument
+    |
+139 |             if lower.contains::<P>(keyword) {
+    |                              +++++
+
+error[E0599]: no variant or associated item named `Internal` found for enum `errors::AuthError` in the current scope
+   --> sih/src/api/auth.rs:46:39
+    |
+ 46 |             .ok_or_else(|| AuthError::Internal("token missing".to_string()))?;
+    |                                       ^^^^^^^^ variant or associated item not found in `errors::AuthError`
+    |
+   ::: sih/src/errors.rs:138:1
+    |
+138 | pub enum AuthError {
+    | ------------------ variant or associated item `Internal` not found for this enum
+
+warning: variable does not need to be mutable
+  --> sih/src/api/auth.rs:18:13
+   |
+18 |         let mut token_map = DashMap::new();
+   |             ----^^^^^^^^^
+   |             |
+   |             help: remove this `mut`
+   |
+   = note: `#[warn(unused_mut)]` (part of `#[warn(unused)]`) on by default
+
+Some errors have detailed explanations: E0282, E0308, E0433, E0599.
+For more information about an error, try `rustc --explain E0282`.
+warning: `sih` (lib) generated 2 warnings
+error: could not compile `sih` (lib) due to 17 previous errors; 2 warnings emitted

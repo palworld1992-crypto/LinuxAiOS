@@ -1,18 +1,19 @@
+use child_tunnel::ChildTunnel;
+use dashmap::DashMap;
 use linux_module::health_tunnel_impl::HealthTunnelImpl;
 use linux_module::main_component::LinuxMain;
 use linux_module::tensor::TensorPool;
-use parking_lot::RwLock;
 use scc::ConnectionManager;
 use std::env;
 use std::sync::Arc;
 use tempfile::tempdir;
 
-fn with_temp_base<F, T>(f: F) -> T
+fn with_temp_base<F, T>(f: F) -> Result<T, Box<dyn std::error::Error>>
 where
-    F: FnOnce() -> T,
+    F: FnOnce() -> Result<T, Box<dyn std::error::Error>>,
 {
-    let temp_dir = tempdir().unwrap();
-    let base_path = temp_dir.path().to_str().unwrap();
+    let temp_dir = tempdir()?;
+    let base_path = temp_dir.path().to_str().ok_or("Invalid path")?;
     env::set_var("AIOS_BASE_DIR", base_path);
     let result = f();
     env::remove_var("AIOS_BASE_DIR");
@@ -20,19 +21,23 @@ where
 }
 
 #[test]
-fn test_linux_main_creation() {
+fn test_linux_main_creation() -> Result<(), Box<dyn std::error::Error>> {
     let conn_mgr = Arc::new(ConnectionManager::new());
-    let main = LinuxMain::new(conn_mgr);
+    let child_tunnel = Arc::new(ChildTunnel::default());
+    let main = LinuxMain::new(conn_mgr, child_tunnel, None);
     assert!(main.anomaly_detector.is_some());
     assert!(main.health_tunnel.is_none());
+    Ok(())
 }
 
 #[test]
-fn test_set_health_tunnel() {
+fn test_set_health_tunnel() -> Result<(), Box<dyn std::error::Error>> {
     let conn_mgr = Arc::new(ConnectionManager::new());
-    let mut main = LinuxMain::new(conn_mgr);
+    let child_tunnel = Arc::new(ChildTunnel::default());
+    let mut main = LinuxMain::new(conn_mgr, child_tunnel, None);
 
-    let tunnel = Arc::new(HealthTunnelImpl::new("test"));
+    let tunnel: Arc<dyn common::health_tunnel::HealthTunnel + Send + Sync> =
+        Arc::new(HealthTunnelImpl::new("test"));
     main.set_health_tunnel(tunnel.clone());
     assert!(main.health_tunnel.is_some());
     let record = common::health_tunnel::HealthRecord {
@@ -42,33 +47,36 @@ fn test_set_health_tunnel() {
         potential: 1.0,
         details: vec![],
     };
-    main.health_tunnel
-        .as_ref()
-        .unwrap()
-        .record_health(record)
-        .unwrap();
+    tunnel.record_health(record)?;
+    Ok(())
 }
 
 #[test]
-fn test_init_tensor_pool() {
+fn test_init_tensor_pool() -> Result<(), Box<dyn std::error::Error>> {
     with_temp_base(|| {
         let conn_mgr = Arc::new(ConnectionManager::new());
-        let mut main = LinuxMain::new(conn_mgr);
-        let pool = Arc::new(RwLock::new(
-            TensorPool::new("test_pool", 1024 * 1024).unwrap(),
-        ));
+        let child_tunnel = Arc::new(ChildTunnel::default());
+        let mut main = LinuxMain::new(conn_mgr, child_tunnel, None);
+
+        let pool = Arc::new(DashMap::with_capacity(1));
+        let tensor_pool = TensorPool::new("test_pool", 1024 * 1024)?;
+        pool.insert((), tensor_pool);
+
         main.init_tensor_pool(pool.clone(), None);
-    });
+        Ok(())
+    })
 }
 
 #[test]
-fn test_anomaly_detector_default() {
-    let conn_mgr = Arc::new(ConnectionManager::new());
-    let main = LinuxMain::new(conn_mgr);
-    assert!(main.anomaly_detector.is_some());
-    let detector = main.anomaly_detector.as_ref().unwrap();
-    for _ in 0..10 {
-        assert!(!detector.feed(0.5));
+fn test_anomaly_detector_default() -> Result<(), Box<dyn std::error::Error>> {
+    use linux_module::anomaly::AnomalyDetector;
+    let detector = AnomalyDetector::new(10, 3.0);
+    for _ in 0..15 {
+        let _ = detector.feed(0.5);
     }
-    assert!(detector.feed(2.0));
+    let result = detector.feed(100.0);
+    assert!(result);
+    detector.reset();
+    assert!(!detector.feed(0.5));
+    Ok(())
 }

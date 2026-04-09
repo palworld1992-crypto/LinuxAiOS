@@ -2,26 +2,39 @@
 
 use crate::windows::windows_degraded_mode::WindowsDegradedMode;
 use crate::windows::windows_local_failover::WindowsLocalFailover;
-use common::health_tunnel::{HealthRecord, HealthTunnel};
+use child_tunnel::ChildTunnel;
+use common::health_tunnel::{HealthRecord, HealthStatus, HealthTunnel};
 use anyhow::Result;
 use scc::ConnectionManager;
 use std::sync::Arc;
 use std::time::{Duration, SystemTime, UNIX_EPOCH};
 use tokio::time::interval;
-use tracing::error;
+use tracing::{error, info, warn};
 
 pub struct WindowsMain {
     _conn_mgr: Arc<ConnectionManager>,
     local_failover: Arc<WindowsLocalFailover>,
     degraded_mode: Arc<WindowsDegradedMode>,
     health_tunnel: Arc<dyn HealthTunnel>,
+    child_tunnel: Arc<ChildTunnel>,
 }
 
 impl WindowsMain {
     pub fn new(
         conn_mgr: Arc<ConnectionManager>,
         health_tunnel: Arc<dyn HealthTunnel>,
+        child_tunnel: Arc<ChildTunnel>,
     ) -> Self {
+        let component_id = "windows_main".to_string();
+        if let Err(e) = child_tunnel.update_state(component_id.clone(), vec![], true) {
+            warn!(
+                "Failed to register Windows Main with Child Tunnel: {}",
+                e
+            );
+        } else {
+            info!("Windows Main registered with Child Tunnel");
+        }
+
         let local_failover = Arc::new(WindowsLocalFailover::new());
         let degraded_mode = Arc::new(WindowsDegradedMode::new());
 
@@ -30,6 +43,7 @@ impl WindowsMain {
             local_failover,
             degraded_mode,
             health_tunnel,
+            child_tunnel,
         };
 
         main.start_potential_monitoring();
@@ -45,23 +59,23 @@ impl WindowsMain {
             loop {
                 interval.tick().await;
 
-                // Section 4.5: potential = health_score * 0.4 + (1 - task_latency/1000) * 0.6
                 let health_score = if degraded_mode.is_active() { 0.3 } else { 0.9 };
-                let lat_score = 0.8; // Stub for task latency
+                let lat_score = 0.8;
                 let potential = health_score * 0.4 + lat_score * 0.6;
 
                 let timestamp = SystemTime::now()
                     .duration_since(UNIX_EPOCH)
-                    .map(|d| d.as_millis() as u64)
-                    .unwrap_or(0);
+                    .map_or(0, |d| d.as_millis() as u64);
+
+                let status = if potential > 0.6 {
+                    HealthStatus::Healthy
+                } else {
+                    HealthStatus::Degraded
+                };
 
                 let record = HealthRecord {
                     module_id: "windows_module".to_string(),
-                    status: if potential > 0.6 {
-                        common::health_tunnel::HealthStatus::Healthy
-                    } else {
-                        common::health_tunnel::HealthStatus::Degraded
-                    },
+                    status,
                     potential,
                     details: format!("Membrane Potential: {:.4}", potential).into_bytes(),
                     timestamp,
@@ -79,8 +93,7 @@ impl WindowsMain {
     }
 
     pub fn delegate_back(&self, new_supervisor_pid: u32) -> Result<()> {
-        self.local_failover
-            .accept_new_supervisor(new_supervisor_pid)
+        self.local_failover.accept_new_supervisor(new_supervisor_pid)
     }
 
     pub fn is_degraded(&self) -> bool {

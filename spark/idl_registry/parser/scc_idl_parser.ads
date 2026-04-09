@@ -98,12 +98,13 @@ package SCC_IDL_Parser is
           Depends => (null => Root),
           Pre => Root /= System.Null_Address;
 
-   procedure Get_Last_Error
-     (Error_Msg : out Interfaces.C.char_array;
-      Error_Len : out Interfaces.C.size_t)
-     with Export,
-          Convention => C,
-          External_Name => "scc_idl_get_last_error";
+    procedure Get_Last_Error
+      (Error_Msg : out Interfaces.C.char_array;
+       Error_Len : out Interfaces.C.size_t)
+      with Export,
+           Convention => C,
+           External_Name => "scc_idl_get_last_error",
+           Depends => (Error_Msg => null, Error_Len => null);
 
 private
    pragma Export (C, Parse_String, "scc_idl_parse_string");

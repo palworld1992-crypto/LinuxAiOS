@@ -4,12 +4,12 @@ use linux_module::health_tunnel_impl::HealthTunnelImpl;
 use std::env;
 use tempfile::tempdir;
 
-fn with_temp_base<F, T>(f: F) -> T
+fn with_temp_base<F, T>(f: F) -> Result<T, Box<dyn std::error::Error>>
 where
-    F: FnOnce() -> T,
+    F: FnOnce() -> Result<T, Box<dyn std::error::Error>>,
 {
-    let temp_dir = tempdir().unwrap();
-    let base_path = temp_dir.path().to_str().unwrap();
+    let temp_dir = tempdir()?;
+    let base_path = temp_dir.path().to_str().ok_or("Invalid path")?;
     env::set_var("AIOS_BASE_DIR", base_path);
     let result = f();
     env::remove_var("AIOS_BASE_DIR");
@@ -17,7 +17,7 @@ where
 }
 
 #[test]
-fn test_record_and_last_health() {
+fn test_record_and_last_health() -> Result<(), Box<dyn std::error::Error>> {
     with_temp_base(|| {
         let tunnel = HealthTunnelImpl::new("test_module");
         let record = HealthRecord {
@@ -27,15 +27,18 @@ fn test_record_and_last_health() {
             potential: 1.0,
             details: vec![],
         };
-        tunnel.record_health(record.clone()).unwrap();
-        let last = tunnel.last_health("component1").unwrap();
+        tunnel.record_health(record.clone())?;
+        let last = tunnel
+            .last_health("component1")
+            .ok_or("health record not found")?;
         assert_eq!(last.module_id, "component1");
         assert_eq!(last.status, HealthStatus::Healthy);
-    });
+        Ok(())
+    })
 }
 
 #[test]
-fn test_health_history() {
+fn test_health_history() -> Result<(), Box<dyn std::error::Error>> {
     with_temp_base(|| {
         let tunnel = HealthTunnelImpl::new("test_module");
         for i in 0..5 {
@@ -50,18 +53,19 @@ fn test_health_history() {
                 potential: 1.0,
                 details: vec![],
             };
-            tunnel.record_health(record).unwrap();
+            tunnel.record_health(record)?;
         }
         let history = tunnel.health_history("component1", 3);
         assert_eq!(history.len(), 3);
         let has_degraded = history.iter().any(|r| r.status == HealthStatus::Degraded);
         let has_healthy = history.iter().any(|r| r.status == HealthStatus::Healthy);
         assert!(has_degraded && has_healthy);
-    });
+        Ok(())
+    })
 }
 
 #[test]
-fn test_rollback() {
+fn test_rollback() -> Result<(), Box<dyn std::error::Error>> {
     with_temp_base(|| {
         let tunnel = HealthTunnelImpl::new("test_module");
         let record1 = HealthRecord {
@@ -71,7 +75,7 @@ fn test_rollback() {
             potential: 1.0,
             details: vec![],
         };
-        tunnel.record_health(record1).unwrap();
+        tunnel.record_health(record1)?;
         let record2 = HealthRecord {
             module_id: "comp".to_string(),
             timestamp: current_timestamp_ms(),
@@ -79,10 +83,10 @@ fn test_rollback() {
             potential: 0.5,
             details: vec![],
         };
-        tunnel.record_health(record2).unwrap();
+        tunnel.record_health(record2)?;
 
-        // Rollback should return the previous snapshot
         let rolled_back = tunnel.rollback();
         assert!(rolled_back.is_some());
-    });
+        Ok(())
+    })
 }

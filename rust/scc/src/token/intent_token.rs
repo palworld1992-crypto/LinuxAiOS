@@ -51,11 +51,10 @@ mod tests {
     use super::*;
 
     #[test]
-    fn test_token_validity() {
-        let token = IntentToken::new([0u8; 32], 1, 200);
-        assert!(token.is_ok());
-        let t = token.unwrap();
-        assert!(t.is_valid().unwrap_or(false));
-        assert_eq!(t.signature.len(), 2420);
+    fn test_token_validity() -> Result<(), TokenError> {
+        let token = IntentToken::new([0u8; 32], 1, 200)?;
+        assert!(token.is_valid()?);
+        assert_eq!(token.signature.len(), 2420);
+        Ok(())
     }
 }

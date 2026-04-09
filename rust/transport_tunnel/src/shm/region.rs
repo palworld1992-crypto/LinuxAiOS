@@ -19,6 +19,10 @@ impl SharedMemoryRegion {
             .truncate(true)
             .open(&path)?;
         file.set_len(size as u64)?;
+        // SAFETY: The file is opened with read/write permissions and its length has been set
+        // to `size`. MmapMut::map_mut creates a mutable memory mapping that is valid for the
+        // lifetime of the File handle, which we store in `Self._file` to prevent the mapping
+        // from becoming dangling.
         let mmap = unsafe { MmapOptions::new().map_mut(&file)? };
         Ok(Self {
             _file: file,
@@ -30,6 +34,9 @@ impl SharedMemoryRegion {
     pub fn open(name: &str, size: usize) -> io::Result<Self> {
         let path = Path::new("/dev/shm").join(name);
         let file = OpenOptions::new().read(true).write(true).open(&path)?;
+        // SAFETY: The file is opened with read/write permissions. MmapMut::map_mut creates
+        // a mutable memory mapping that is valid for the lifetime of the File handle, which
+        // we store in `Self._file` to prevent the mapping from becoming dangling.
         let mmap = unsafe { MmapOptions::new().map_mut(&file)? };
         Ok(Self {
             _file: file,

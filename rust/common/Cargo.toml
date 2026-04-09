@@ -18,7 +18,7 @@ anyhow = "1.0"
 tracing = "0.1"
 rand = { workspace = true }
 dashmap = { workspace = true }
-ringbuf = "0.4"
+ringbuf = "0.4.8"
 crossbeam-utils = "0.8"
 evmap = "11.0"
 rusqlite = { workspace = true }

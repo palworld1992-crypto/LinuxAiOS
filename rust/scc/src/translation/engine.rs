@@ -1,12 +1,11 @@
 use memmap2::MmapMut;
-use std::os::fd::{FromRawFd, IntoRawFd};
 use thiserror::Error;
 
 #[derive(Debug, Clone)]
 pub struct ShmHandle {
-    id: String,
-    size: usize,
-    fd: i32,
+    pub id: String,
+    pub size: usize,
+    pub fd: i32,
 }
 
 #[derive(Error, Debug)]
@@ -26,7 +25,6 @@ impl TranslationEngine {
         // SAFETY: memfd_create syscall with MFD_CLOEXEC and MFD_NOEXEC_SEAL flags.
         // - MFD_CLOEXEC ensures the fd is closed on exec
         // - MFD_NOEXEC_SEAL prevents executing code in the memfd
-        // The fd is valid for the duration of this function until we close it or transfer ownership.
         let fd = unsafe {
             libc::syscall(
                 libc::SYS_memfd_create,
@@ -41,18 +39,22 @@ impl TranslationEngine {
             ));
         }
 
+        let fd_i32: i32 = fd
+            .try_into()
+            .map_err(|_| TranslationError::CreateFailed("fd overflow".to_string()))?;
+
         // SAFETY: fd is a valid file descriptor from memfd_create. ftruncate is safe here.
-        if libc::ftruncate(fd, size as libc::off_t) != 0 {
-            unsafe { libc::close(fd) };
+        if unsafe { libc::ftruncate(fd_i32, size as libc::off_t) } != 0 {
+            // SAFETY: fd is valid and we're just closing it after ftruncate failed
+            unsafe { libc::close(fd_i32) };
             return Err(TranslationError::CreateFailed(
                 "ftruncate failed".to_string(),
             ));
         }
 
-        // SAFETY: mmap with appropriate size. We ensure size > 0 and the fd is valid.
-        let mmap = unsafe {
-            MmapMut::mmap_mut(size).map_err(|e| TranslationError::MapFailed(e.to_string()))?
-        };
+        // SAFETY: mmap with appropriate size using map_anon for anonymous memory
+        let mmap =
+            MmapMut::map_anon(size).map_err(|e| TranslationError::MapFailed(e.to_string()))?;
 
         let id = format!(
             "shm_{}",
@@ -63,11 +65,18 @@ impl TranslationEngine {
                 .ok_or_else(|| TranslationError::CreateFailed("System time error".into()))?
         );
 
-        Ok((ShmHandle { id, size, fd }, mmap))
+        Ok((
+            ShmHandle {
+                id,
+                size,
+                fd: fd_i32,
+            },
+            mmap,
+        ))
     }
 
-    pub fn open_region(id: &str) -> Result<ShmHandle, TranslationError> {
-        // TODO: Implement actual region opening via /proc/self/fd or similar
+    pub fn open_region(_id: &str) -> Result<ShmHandle, TranslationError> {
+        // TODO(Phase 3): Implement actual region opening via /proc/self/fd or similar
         Err(TranslationError::InvalidHandle)
     }
 }
@@ -77,14 +86,18 @@ mod tests {
     use super::*;
 
     #[test]
-    fn test_create_region() {
+    fn test_create_region() -> Result<(), TranslationError> {
         let result = TranslationEngine::create_region(4096);
         assert!(
             result.is_ok(),
             "Failed to create region: {:?}",
             result.err()
         );
-        let (handle, _mmap) = result.unwrap();
+        let (_handle, _mmap) = result?;
+        // Verify handle properties
+        let result = TranslationEngine::create_region(4096);
+        let (handle, _) = result?;
         assert_eq!(handle.size, 4096);
+        Ok(())
     }
 }

@@ -2,6 +2,7 @@
 
 use serde::Deserialize;
 use std::fs;
+use tracing::warn;
 
 #[derive(Debug, Deserialize)]
 struct PolicyConfig {
@@ -25,10 +26,18 @@ impl SihPolicyEngine {
             trust_threshold: 0.7,
             max_knowledge_entries: 10000,
         };
-        let config = fs::read_to_string("/etc/aios/sih_policy.json")
+        let config = match fs::read_to_string("/etc/aios/sih_policy.json")
             .ok()
             .and_then(|s| serde_json::from_str(&s).ok())
-            .unwrap_or(default);
+        {
+            Some(cfg) => cfg,
+            None => {
+                warn!(
+                    "Failed to load policy config from /etc/aios/sih_policy.json, using defaults"
+                );
+                default
+            }
+        };
         Self { config }
     }
 

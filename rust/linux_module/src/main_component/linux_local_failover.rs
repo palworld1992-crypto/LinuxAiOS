@@ -3,6 +3,7 @@
 
 use anyhow::{anyhow, Result};
 use common::health_tunnel::{HealthRecord, HealthStatus, HealthTunnel};
+use dashmap::DashMap;
 use std::sync::atomic::{AtomicBool, Ordering};
 use std::sync::Arc;
 use tracing::{error, info, warn};
@@ -22,7 +23,7 @@ pub struct LocalFailover {
     supervisor_heartbeat: AtomicBool,
     last_heartbeat_ts: std::sync::atomic::AtomicU64,
     snapshot_mgr: Arc<SnapshotManager>,
-    health_tunnel: Option<Arc<dyn HealthTunnel + Send + Sync>>,
+    health_tunnel: DashMap<String, Arc<dyn HealthTunnel + Send + Sync>>,
 }
 
 impl LocalFailover {
@@ -32,12 +33,12 @@ impl LocalFailover {
             supervisor_heartbeat: AtomicBool::new(true),
             last_heartbeat_ts: std::sync::atomic::AtomicU64::new(0),
             snapshot_mgr,
-            health_tunnel: None,
+            health_tunnel: DashMap::new(),
         }
     }
 
-    pub fn set_health_tunnel(&mut self, tunnel: Arc<dyn HealthTunnel + Send + Sync>) {
-        self.health_tunnel = Some(tunnel);
+    pub fn set_health_tunnel(&self, tunnel: Arc<dyn HealthTunnel + Send + Sync>) {
+        self.health_tunnel.insert("tunnel".to_string(), tunnel);
     }
 
     pub fn get_state(&self) -> FailoverState {
@@ -52,18 +53,24 @@ impl LocalFailover {
 
     pub fn record_supervisor_heartbeat(&self) {
         self.supervisor_heartbeat.store(true, Ordering::Release);
-        let now = std::time::SystemTime::now()
-            .duration_since(std::time::UNIX_EPOCH)
-            .map(|d| d.as_secs())
-            .unwrap_or(0);
+        let now = match std::time::SystemTime::now().duration_since(std::time::UNIX_EPOCH) {
+            Ok(d) => d.as_secs(),
+            Err(_) => {
+                warn!("System clock before UNIX_EPOCH in record_supervisor_heartbeat");
+                0
+            }
+        };
         self.last_heartbeat_ts.store(now, Ordering::Release);
     }
 
     pub fn check_supervisor_alive(&self, timeout_secs: u64) -> bool {
-        let now = std::time::SystemTime::now()
-            .duration_since(std::time::UNIX_EPOCH)
-            .map(|d| d.as_secs())
-            .unwrap_or(0);
+        let now = match std::time::SystemTime::now().duration_since(std::time::UNIX_EPOCH) {
+            Ok(d) => d.as_secs(),
+            Err(_) => {
+                warn!("System clock before UNIX_EPOCH in check_supervisor_alive");
+                0
+            }
+        };
         let last = self.last_heartbeat_ts.load(Ordering::Acquire);
         if last == 0 {
             return false;
@@ -91,13 +98,17 @@ impl LocalFailover {
         self.state
             .store(FailoverState::Degraded as u8, Ordering::Release);
 
-        if let Some(ref tunnel) = self.health_tunnel {
+        if let Some(tunnel) = self.health_tunnel.get("tunnel") {
             let record = HealthRecord {
                 module_id: "linux_main".to_string(),
-                timestamp: std::time::SystemTime::now()
-                    .duration_since(std::time::UNIX_EPOCH)
-                    .map(|d| d.as_secs())
-                    .unwrap_or(0),
+                timestamp: match std::time::SystemTime::now().duration_since(std::time::UNIX_EPOCH)
+                {
+                    Ok(d) => d.as_secs(),
+                    Err(_) => {
+                        warn!("System clock before UNIX_EPOCH in handle_supervisor_failure");
+                        0
+                    }
+                },
                 status: HealthStatus::Degraded,
                 potential: 0.5,
                 details: b"supervisor_failover".to_vec(),
@@ -128,16 +139,19 @@ impl LocalFailover {
         );
 
         self.supervisor_heartbeat.store(true, Ordering::Release);
-        let now = std::time::SystemTime::now()
-            .duration_since(std::time::UNIX_EPOCH)
-            .map(|d| d.as_secs())
-            .unwrap_or(0);
+        let now = match std::time::SystemTime::now().duration_since(std::time::UNIX_EPOCH) {
+            Ok(d) => d.as_secs(),
+            Err(_) => {
+                warn!("System clock before UNIX_EPOCH in accept_new_supervisor");
+                0
+            }
+        };
         self.last_heartbeat_ts.store(now, Ordering::Release);
 
         self.state
             .store(FailoverState::Normal as u8, Ordering::Release);
 
-        if let Some(ref tunnel) = self.health_tunnel {
+        if let Some(tunnel) = self.health_tunnel.get("tunnel") {
             let record = HealthRecord {
                 module_id: "linux_main".to_string(),
                 timestamp: now,

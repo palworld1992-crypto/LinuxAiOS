@@ -1,15 +1,13 @@
 use anyhow::{anyhow, Result};
 use common::health_tunnel::{HealthRecord, HealthStatus, HealthTunnel};
 use common::utils::current_timestamp_ms;
-use parking_lot::RwLock;
-use std::collections::HashMap;
+use dashmap::DashMap;
 use std::path::PathBuf;
 use std::process::Command;
 use std::sync::Arc;
-use sysinfo::{Pid, ProcessExt, System, SystemExt};
+use sysinfo::{Pid, PidExt, ProcessExt, System, SystemExt};
 use tracing::{info, warn};
 
-/// Thông tin quản lý một tiến trình (đã bỏ trường pid vì không dùng)
 #[derive(Debug, Clone)]
 pub struct ManagedProcess {
     pub name: String,
@@ -19,10 +17,9 @@ pub struct ManagedProcess {
     pub last_health_check: u64,
 }
 
-/// Process Manager chính
 pub struct ProcessManager {
-    sys: RwLock<System>,
-    managed: RwLock<HashMap<u32, ManagedProcess>>,
+    managed: DashMap<u32, ManagedProcess>,
+    known_pids: DashMap<u32, bool>,
     health_tunnel: Option<Arc<dyn HealthTunnel + Send + Sync>>,
     cgroup_root: PathBuf,
 }
@@ -36,8 +33,8 @@ impl Default for ProcessManager {
 impl ProcessManager {
     pub fn new() -> Self {
         Self {
-            sys: RwLock::new(System::new_all()),
-            managed: RwLock::new(HashMap::new()),
+            managed: DashMap::new(),
+            known_pids: DashMap::new(),
             health_tunnel: None,
             cgroup_root: PathBuf::from("/sys/fs/cgroup"),
         }
@@ -48,31 +45,44 @@ impl ProcessManager {
     }
 
     pub fn refresh(&self) {
-        self.sys.write().refresh_all();
+        let sys = System::new_all();
+        self.known_pids.clear();
+        for (pid, _) in sys.processes() {
+            self.known_pids.insert(pid.as_u32(), true);
+        }
     }
 
     pub fn list_all_processes(&self) -> Vec<(Pid, String)> {
-        self.sys
-            .read()
-            .processes()
+        let sys = System::new_all();
+        sys.processes()
             .iter()
-            .map(|(pid, proc)| (*pid, proc.name().to_string()))
+            .map(|(pid, proc_)| (*pid, proc_.name().to_string()))
             .collect()
     }
 
     pub fn process_exists(&self, pid: u32) -> bool {
-        self.sys.read().process(Pid::from(pid as usize)).is_some()
+        if let Some(exists) = self.known_pids.get(&pid) {
+            return *exists;
+        }
+        let sys = System::new_all();
+        sys.process(Pid::from(pid as usize)).is_some()
+    }
+
+    pub fn get_process_cmdline(&self, pid: u32) -> Option<Vec<String>> {
+        let sys = System::new_all();
+        sys.process(Pid::from(pid as usize))
+            .map(|p| vec![p.name().to_string()])
     }
 
     pub fn track_process(&self, pid: u32, name: String, cmdline: Vec<String>) {
-        let mut managed = self.managed.write();
-        managed.entry(pid).or_insert_with(|| ManagedProcess {
-                    name,
-                    cmdline,
-                    cgroup_path: None,
-                    cpu_affinity: None,
-                    last_health_check: current_timestamp_ms(),
-                });
+        self.managed.entry(pid).or_insert_with(|| ManagedProcess {
+            name,
+            cmdline,
+            cgroup_path: None,
+            cpu_affinity: None,
+            last_health_check: current_timestamp_ms(),
+        });
+        self.known_pids.insert(pid, true);
     }
 
     pub fn assign_to_cgroup(&self, pid: u32, cgroup_name: &str) -> Result<()> {
@@ -82,8 +92,8 @@ impl ProcessManager {
             std::fs::create_dir_all(&cgroup_dir)?;
         }
         std::fs::write(&cgroup_path, pid.to_string())?;
-        if let Some(proc) = self.managed.write().get_mut(&pid) {
-            proc.cgroup_path = Some(cgroup_name.to_string());
+        if let Some(mut proc_ref) = self.managed.get_mut(&pid) {
+            proc_ref.cgroup_path = Some(cgroup_name.to_string());
         }
         info!("Assigned PID {} to cgroup {}", pid, cgroup_name);
         Ok(())
@@ -107,8 +117,8 @@ impl ProcessManager {
                 std::io::Error::last_os_error()
             ));
         }
-        if let Some(proc) = self.managed.write().get_mut(&pid) {
-            proc.cpu_affinity = Some(cores.to_vec());
+        if let Some(mut proc_ref) = self.managed.get_mut(&pid) {
+            proc_ref.cpu_affinity = Some(cores.to_vec());
         }
         info!("Set CPU affinity for PID {} to cores {:?}", pid, cores);
         Ok(())
@@ -163,10 +173,9 @@ impl ProcessManager {
     }
 
     pub fn restart_process(&self, pid: u32) -> Result<()> {
-        // Clone needed data before dropping the lock
         let (name, cmdline, cgroup, cores) = {
-            let managed = self.managed.read();
-            let proc_info = managed
+            let proc_info = self
+                .managed
                 .get(&pid)
                 .ok_or_else(|| anyhow!("Process {} not tracked", pid))?;
             (
@@ -175,7 +184,7 @@ impl ProcessManager {
                 proc_info.cgroup_path.clone(),
                 proc_info.cpu_affinity.clone(),
             )
-        }; // read lock dropped here
+        };
 
         if cmdline.is_empty() {
             return Err(anyhow!("No cmdline for process {}", pid));
@@ -191,22 +200,27 @@ impl ProcessManager {
 
         self.track_process(new_pid, name, cmdline);
 
-        if let Some(cgroup) = cgroup {
-            self.assign_to_cgroup(new_pid, &cgroup)?;
+        if let Some(ref cgroup) = cgroup {
+            self.assign_to_cgroup(new_pid, cgroup)?;
         }
-        if let Some(cores) = cores {
-            self.set_cpu_affinity(new_pid, &cores)?;
+        if let Some(ref cores) = cores {
+            self.set_cpu_affinity(new_pid, cores)?;
         }
 
         info!("Restarted process {} (new PID={})", pid, new_pid);
         Ok(())
     }
 
+    pub fn list_all_pids(&self) -> Vec<u32> {
+        self.managed.iter().map(|e| *e.key()).collect()
+    }
+
     pub fn check_health(&self) -> Result<()> {
         self.refresh();
-        let mut to_remove = Vec::new();
-        let managed = self.managed.read();
-        for (&pid, info) in managed.iter() {
+        let mut to_remove = vec![];
+        for entry in self.managed.iter() {
+            let pid = *entry.key();
+            let info = entry.value();
             if !self.process_exists(pid) {
                 warn!("Process {} ({}) is dead", pid, info.name);
                 to_remove.push(pid);
@@ -224,27 +238,20 @@ impl ProcessManager {
                     };
                     let _ = tunnel.record_health(record);
                 }
-            } else {
-                // To satisfy Rule 0 (no dead_code), we update the last_health_check
-                // Actually we should have a write lock to the entries if we want to update it.
-                // For now, just logging it is enough to make it used.
-                // Wait, it is already used in the format! call above if it died, but we also want it used for living ones.
             }
         }
-        drop(managed);
-        let mut managed = self.managed.write();
         for pid in to_remove {
-            managed.remove(&pid);
+            self.managed.remove(&pid);
+            self.known_pids.remove(&pid);
         }
-        // Update last_health_check for all survivors
         let now = current_timestamp_ms();
-        for proc in managed.values_mut() {
-            proc.last_health_check = now;
+        for mut entry in self.managed.iter_mut() {
+            entry.value_mut().last_health_check = now;
         }
         Ok(())
     }
 
     pub fn managed_count(&self) -> usize {
-        self.managed.read().len()
+        self.managed.len()
     }
 }

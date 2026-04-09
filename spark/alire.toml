@@ -7,3 +7,6 @@ maintainers = ["Your Name <example@example.com>"]
 licenses = "MIT OR Apache-2.0 WITH LLVM-exception"
 website = ""
 tags = []
+
+[[depends-on]]
+gprbuild = "^25.0.1"

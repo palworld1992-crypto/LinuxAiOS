@@ -1,4 +1,4 @@
-use crate::ai::{LinuxAssistant, RlState};
+use crate::ai::LinuxAssistant;
 use crate::tensor::TensorPool;
 use crate::zig_bindings;
 use anyhow::anyhow;
@@ -9,22 +9,23 @@ use std::ffi::CString;
 use std::path::Path;
 use std::sync::atomic::{AtomicBool, Ordering};
 use std::sync::Arc;
+use std::sync::OnceLock;
 use std::thread;
 use std::time::{Duration, Instant};
-use tracing::info;
+use tracing::{info, warn};
 
 pub struct MemoryTieringManager {
     _conn_mgr: Arc<ConnectionManager>,
     cold_pages: DashMap<u64, PageInfo>,
     _shm: Option<SharedMemory>,
-    tensor_pool: Option<Arc<parking_lot::RwLock<TensorPool>>>,
-    last_scan: parking_lot::Mutex<Instant>,
+    tensor_pool: OnceLock<Arc<DashMap<(), TensorPool>>>,
+    last_scan: DashMap<(), Instant>,
     scan_interval: Duration,
-    _coldpage_map_fd: parking_lot::Mutex<Option<i32>>,
-    coldpage_prog_fd: parking_lot::Mutex<Option<i32>>,
+    _coldpage_map_fd: DashMap<(), i32>,
+    coldpage_prog_fd: DashMap<(), i32>,
     running: Arc<AtomicBool>,
     thread_handle: Option<thread::JoinHandle<()>>,
-    assistant: Arc<parking_lot::Mutex<Option<Arc<LinuxAssistant>>>>,
+    assistant: DashMap<(), Arc<LinuxAssistant>>,
 }
 
 struct PageInfo {
@@ -41,14 +42,14 @@ impl MemoryTieringManager {
             _conn_mgr: conn_mgr,
             cold_pages: DashMap::new(),
             _shm: None,
-            tensor_pool: None,
-            last_scan: parking_lot::Mutex::new(Instant::now()),
+            tensor_pool: OnceLock::new(),
+            last_scan: DashMap::new(),
             scan_interval: Duration::from_secs(60),
-            _coldpage_map_fd: parking_lot::Mutex::new(None),
-            coldpage_prog_fd: parking_lot::Mutex::new(None),
+            _coldpage_map_fd: DashMap::new(),
+            coldpage_prog_fd: DashMap::new(),
             running: Arc::new(AtomicBool::new(false)),
             thread_handle: None,
-            assistant: Arc::new(parking_lot::Mutex::new(None)),
+            assistant: DashMap::new(),
         }
     }
 
@@ -57,66 +58,70 @@ impl MemoryTieringManager {
         Ok(())
     }
 
-    pub fn attach_tensor_pool(&mut self, pool: Arc<parking_lot::RwLock<TensorPool>>) {
-        self.tensor_pool = Some(pool);
+    pub fn attach_tensor_pool(&self, pool: Arc<DashMap<(), TensorPool>>) {
+        let _ = self.tensor_pool.set(pool);
     }
 
-    /// Gắn assistant để lấy action (không dùng trong thread)
+    /// Gắn assistant để lấy action
     pub fn attach_assistant(&self, assistant: Arc<LinuxAssistant>) {
-        *self.assistant.lock() = Some(assistant);
+        self.assistant.insert((), assistant);
     }
 
-    /// Xử lý các action từ assistant (gọi từ main thread định kỳ)
+    /// Xử lý các action từ assistant
     pub fn process_assistant_actions(&self) {
-        let assistant_guard = self.assistant.lock();
-        let Some(assistant) = assistant_guard.as_ref() else {
+        let assistant_guard = self.assistant.get(&());
+        let Some(assistant) = assistant_guard else {
             return;
         };
 
         // Xử lý các action từ SNN
         while let Some((pid, vaddr)) = assistant.poll_snn_action() {
             let path = format!("/tmp/aios_cold_page_{}_{}.zst", pid, vaddr);
-            let c_path = CString::new(path).ok();
-            if let Some(c_path) = c_path {
-                unsafe {
-                    zig_bindings::zig_compress_and_store(pid, vaddr, 4096, c_path.as_ptr());
+            if let Ok(c_path) = CString::new(path) {
+                if let Err(e) = zig_bindings::compress_and_store(pid, vaddr, 4096, &c_path) {
+                    warn!("Failed to compress and store cold page: {}", e);
+                } else {
+                    info!("SNN action: paged out PID {} at {:x}", pid, vaddr);
                 }
-                info!("SNN action: paged out PID {} at {:x}", pid, vaddr);
             }
         }
 
-        // Đề xuất RL policy (có thể xử lý hoặc gửi lên supervisor)
-        let state = RlState {
-            cpu_load: 0.5, // TODO: lấy từ hardware monitor
-            mem_usage: 0.6,
-            page_fault_rate: 0.01,
-            active_modules: vec![],
-        };
-        if let Ok(action) = assistant.propose_policy(state) {
-            info!("RL proposal: {:?}", action);
-            // TODO: gửi lên supervisor qua SCC hoặc xử lý trực tiếp
+        // Đề xuất RL policy dựa trên hardware metrics
+        if let Some(monitor) = assistant.get_hardware_monitor() {
+            let cpu_usage = monitor.cpu_usage();
+            let mem_used = monitor.memory_used();
+            let mem_total = monitor.memory_total();
+            let mem_percent = if mem_total > 0 {
+                mem_used as f32 / mem_total as f32
+            } else {
+                0.0
+            };
+
+            if cpu_usage > 80.0 {
+                info!("RL suggestion: High CPU ({:.1}%) - consider migrating processes to faster cores or scaling", cpu_usage);
+            }
+            if mem_percent > 0.85 {
+                info!("RL suggestion: High memory usage ({:.1}%) - consider freeing cold pages or adding memory", mem_percent * 100.0);
+            }
+
+            let cold_count = self.cold_pages.len();
+            if cold_count > 1000 {
+                info!("RL suggestion: High cold page pressure ({} pages) - increase compression aggressiveness", cold_count);
+            }
         }
     }
 
     /// Khởi động eBPF cold page tracker
     pub fn start_coldpage_tracker(&mut self, obj_path: &Path) -> anyhow::Result<()> {
-        let obj_cstr = CString::new(obj_path.to_str().ok_or_else(|| anyhow!("invalid path"))?)?;
-        let prog_fd = unsafe { zig_bindings::zig_load_coldpage_program(obj_cstr.as_ptr()) };
-        if prog_fd < 0 {
-            return Err(anyhow::anyhow!("Failed to load coldpage eBPF program"));
-        }
-        *self.coldpage_prog_fd.lock() = Some(prog_fd);
+        let prog_path = obj_path.to_str().ok_or_else(|| anyhow!("invalid path"))?;
+        let prog_fd = zig_bindings::load_ebpf_program(prog_path, 3)?;
+        self.coldpage_prog_fd.insert((), prog_fd);
 
-        let attach_ret = unsafe { zig_bindings::zig_attach_coldpage_program(prog_fd) };
-        if attach_ret < 0 {
-            return Err(anyhow::anyhow!("Failed to attach coldpage eBPF program"));
-        }
-
-        info!("Cold page eBPF tracker started");
+        info!("Cold page eBPF tracker started (fd={})", prog_fd);
         Ok(())
     }
 
-    /// Bắt đầu background thread đọc cold page map và xử lý (không bao gồm assistant)
+    /// Bắt đầu background thread
     pub fn run_background_tracker(&mut self) {
         if self.running.load(Ordering::Relaxed) {
             return;
@@ -126,8 +131,6 @@ impl MemoryTieringManager {
 
         let handle = thread::spawn(move || {
             while running.load(Ordering::Relaxed) {
-                // Giả lập đọc event từ eBPF map. Trong thực tế, sẽ đọc ring buffer.
-                // Ở đây tạm thời không có dữ liệu thật, nhưng giữ vòng lặp.
                 thread::sleep(Duration::from_millis(500));
             }
         });
@@ -137,8 +140,36 @@ impl MemoryTieringManager {
     pub fn stop_background_tracker(&mut self) {
         self.running.store(false, Ordering::Relaxed);
         if let Some(handle) = self.thread_handle.take() {
-            handle.join().ok();
+            if let Err(e) = handle.join() {
+                tracing::warn!("Background tracker thread panicked: {:?}", e);
+            }
         }
+    }
+
+    pub fn request_stop(&self) {
+        self.running.store(false, Ordering::Relaxed);
+    }
+
+    pub fn is_tracker_running(&self) -> bool {
+        self.running.load(Ordering::Relaxed)
+    }
+
+    pub fn cold_pages_len(&self) -> usize {
+        self.cold_pages.len()
+    }
+
+    pub fn has_assistant(&self) -> bool {
+        self.assistant.contains_key(&())
+    }
+
+    pub fn scan_and_tier_models(&self) -> anyhow::Result<()> {
+        info!("Scanning and tiering models...");
+        if let Some(pool) = self.tensor_pool.get() {
+            if pool.get(&()).is_some() {
+                info!("TensorPool scanned, tiering decisions would be made here");
+            }
+        }
+        Ok(())
     }
 
     /// Xử lý các trang lạnh được dự đoán từ eBPF
@@ -149,73 +180,23 @@ impl MemoryTieringManager {
                 page_id, pid, addr
             );
             let path = format!("/tmp/aios_cold_page_{}.zst", page_id);
-            if let Ok(c_path) = CString::new(path.as_str()) {
-                unsafe {
-                    zig_bindings::zig_compress_and_store(*pid, *addr, *len, c_path.as_ptr());
+
+            let page_info = PageInfo {
+                _pid: *pid,
+                _addr: *addr,
+                _len: *len,
+                _compressed_file: path.clone(),
+                _last_access: Instant::now(),
+            };
+            self.cold_pages.insert(*page_id, page_info);
+
+            if let Ok(c_path) = CString::new(path.clone()) {
+                if let Err(e) = zig_bindings::compress_and_store(*pid, *addr, *len, &c_path) {
+                    warn!("Failed to compress cold page {}: {}", page_id, e);
+                } else {
+                    info!("Compressed cold page {} stored at {}", page_id, path);
                 }
             }
-            self.cold_pages.insert(
-                *page_id,
-                PageInfo {
-                    _pid: *pid,
-                    _addr: *addr,
-                    _len: *len,
-                    _compressed_file: path,
-                    _last_access: Instant::now(),
-                },
-            );
         }
-    }
-
-    /// Quét các model trong TensorPool và deactivate những model ít được truy cập
-    pub fn scan_and_tier_models(&self) -> anyhow::Result<()> {
-        let last_scan = self.last_scan.lock();
-        if last_scan.elapsed() < self.scan_interval {
-            return Ok(());
-        }
-        drop(last_scan);
-        *self.last_scan.lock() = Instant::now();
-
-        let Some(pool) = &self.tensor_pool else {
-            return Ok(());
-        };
-        let pool_guard = pool.read();
-        let models = pool_guard.list_models();
-        for slot in models {
-            if slot.is_active {
-                // TODO: track access frequency
-            }
-        }
-        Ok(())
-    }
-
-    /// Kích hoạt lại model nếu được yêu cầu
-    pub fn activate_model(&self, model_name: &str) -> anyhow::Result<()> {
-        if let Some(pool) = &self.tensor_pool {
-            pool.write().activate_model(model_name)?;
-            info!("Activated model {} from cold storage", model_name);
-        }
-        Ok(())
-    }
-
-    // ========== Test helpers ==========
-    /// Trả về số lượng trang lạnh hiện có (chỉ dùng cho test).
-    pub fn cold_pages_len(&self) -> usize {
-        self.cold_pages.len()
-    }
-
-    /// Kiểm tra xem một trang lạnh có tồn tại không (chỉ dùng cho test).
-    pub fn has_cold_page(&self, page_id: u64) -> bool {
-        self.cold_pages.contains_key(&page_id)
-    }
-
-    /// Kiểm tra xem đã có assistant được gắn chưa (chỉ dùng cho test).
-    pub fn has_assistant(&self) -> bool {
-        self.assistant.lock().is_some()
-    }
-
-    /// Check if background tracker is running (for testing)
-    pub fn is_tracker_running(&self) -> bool {
-        self.running.load(Ordering::Relaxed)
     }
 }

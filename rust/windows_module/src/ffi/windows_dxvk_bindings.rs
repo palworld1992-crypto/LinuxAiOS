@@ -158,7 +158,36 @@ impl DxvkBindings {
             }
         }
 
-        debug!("Setting DXVK HUD: {:?}", options);
+        let hud_value = options.join(",");
+        let registry_path = prefix.join("system.reg");
+
+        if registry_path.exists() {
+            let content = std::fs::read_to_string(&registry_path)?;
+            let dxvk_hud_line = format!("DXVK_HUD={}\n", hud_value);
+
+            if content.contains("DXVK_HUD=") {
+                let new_content = content
+                    .lines()
+                    .map(|line| {
+                        if line.starts_with("DXVK_HUD=") {
+                            dxvk_hud_line.as_str()
+                        } else {
+                            line
+                        }
+                    })
+                    .collect::<Vec<_>>()
+                    .join("\n");
+                std::fs::write(&registry_path, new_content)?;
+            } else {
+                let mut file = std::fs::OpenOptions::new()
+                    .append(true)
+                    .open(&registry_path)?;
+                use std::io::Write;
+                writeln!(file, "{}", dxvk_hud_line)?;
+            }
+        }
+
+        info!("Set DXVK HUD to: {} for prefix {:?}", hud_value, prefix);
         Ok(())
     }
 
@@ -167,7 +196,22 @@ impl DxvkBindings {
             return Err(DxvkError::ConfigError("Prefix does not exist".to_string()));
         }
 
-        debug!("Enabling VSync for prefix: {:?}", prefix);
+        let registry_path = prefix.join("user.reg");
+
+        if registry_path.exists() {
+            let content = std::fs::read_to_string(&registry_path)?;
+            let vsync_line = "\"DXVK_VSYNC\"=\"1\"\n";
+
+            if !content.contains("DXVK_VSYNC") {
+                let mut file = std::fs::OpenOptions::new()
+                    .append(true)
+                    .open(&registry_path)?;
+                use std::io::Write;
+                writeln!(file, "{}", vsync_line)?;
+            }
+        }
+
+        info!("Enabled VSync for prefix {:?}", prefix);
         Ok(())
     }
 
@@ -176,7 +220,19 @@ impl DxvkBindings {
             return Err(DxvkError::ConfigError("Prefix does not exist".to_string()));
         }
 
-        debug!("Disabling VSync for prefix: {:?}", prefix);
+        let registry_path = prefix.join("user.reg");
+
+        if registry_path.exists() {
+            let content = std::fs::read_to_string(&registry_path)?;
+            let new_content = content
+                .lines()
+                .filter(|line| !line.contains("DXVK_VSYNC"))
+                .collect::<Vec<_>>()
+                .join("\n");
+            std::fs::write(&registry_path, new_content)?;
+        }
+
+        info!("Disabled VSync for prefix {:?}", prefix);
         Ok(())
     }
 

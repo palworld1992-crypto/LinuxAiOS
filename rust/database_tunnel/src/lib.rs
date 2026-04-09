@@ -6,7 +6,6 @@ use anyhow::Result;
 use common::utils::current_timestamp_ms;
 use crossbeam::channel::{unbounded, Receiver, Sender};
 use dashmap::DashMap;
-use parking_lot::RwLock;
 use rusqlite::{params, Connection};
 use serde::{Deserialize, Serialize};
 use sha2::{Digest, Sha256};
@@ -22,7 +21,7 @@ pub struct ChangeRecord {
     pub row_id: u64,
     pub old_hash: Vec<u8>,
     pub new_hash: Vec<u8>,
-    pub signature: Vec<u8>, // Dilithium signature
+    pub signature: Vec<u8>,
 }
 
 #[derive(Debug, Clone, Serialize, Deserialize)]
@@ -33,15 +32,14 @@ pub struct MerkleNode {
 }
 
 pub struct DatabaseTunnel {
-    merkle_root: RwLock<Vec<u8>>,
+    merkle_root: DashMap<u64, Vec<u8>>,
     change_sender: Sender<ChangeRecord>,
-    snapshots: DashMap<u64, Vec<u8>>, // in-memory cache root hash theo block
-    _bg_handle: thread::JoinHandle<()>, // giữ background writer sống
+    snapshots: DashMap<u64, Vec<u8>>,
+    _bg_handle: thread::JoinHandle<()>,
 }
 
 impl DatabaseTunnel {
     pub fn new(path: &str) -> Result<Self> {
-        // Khởi tạo schema SQLite một lần (chỉ lúc new)
         {
             let conn = Connection::open(path)?;
             conn.execute(
@@ -76,27 +74,31 @@ impl DatabaseTunnel {
             }
         });
 
+        let merkle_root = DashMap::new();
+        merkle_root.insert(0, vec![0u8; 32]);
+
         Ok(Self {
-            merkle_root: RwLock::new(vec![0u8; 32]),
+            merkle_root,
             change_sender: sender,
             snapshots: DashMap::new(),
             _bg_handle: handle,
         })
     }
 
-    /// Ghi change → trả về root hash NGAY (không chờ SQLite)
     pub fn record_change(&self, mut record: ChangeRecord, snapshot_after: bool) -> Result<Vec<u8>> {
         record.timestamp = current_timestamp_ms();
 
-        // Fire-and-forget vào background (chỉ ghi lịch sử)
         let _ = self.change_sender.send(record.clone());
 
-        // Tính root hash trong memory (incremental hash chain)
-        let prev_root = self.merkle_root.read().clone();
+        let prev_root = self
+            .merkle_root
+            .get(&0)
+            .map(|r| r.value().clone())
+            .map_or(vec![0u8; 32], |v| v);
         let record_hash = self.hash_record(&record);
         let new_root = self.compute_new_root(&prev_root, &record_hash);
 
-        *self.merkle_root.write() = new_root.clone();
+        self.merkle_root.insert(0, new_root.clone());
 
         if snapshot_after {
             let block_num = self.snapshots.len() as u64 + 1;
@@ -126,13 +128,26 @@ impl DatabaseTunnel {
     }
 
     pub fn verify_integrity(&self) -> Result<bool> {
-        // Luồng chính chỉ kiểm tra in-memory (luôn nhất quán theo thiết kế)
-        // Full historical verify từ SQLite chỉ dùng khi audit, không ở main path
-        Ok(true)
+        let root = self
+            .merkle_root
+            .get(&0)
+            .map(|r| r.value().clone())
+            .map_or(vec![], |v| v);
+        if root.is_empty() {
+            return Ok(false);
+        }
+        if self.snapshots.is_empty() {
+            return Ok(true);
+        }
+        let has_valid_snapshot = self.snapshots.iter().any(|entry| entry.value().len() == 32);
+        Ok(has_valid_snapshot)
     }
 
     pub fn get_current_root(&self) -> Vec<u8> {
-        self.merkle_root.read().clone()
+        self.merkle_root
+            .get(&0)
+            .map(|r| r.value().clone())
+            .map_or(vec![0u8; 32], |v| v)
     }
 }
 
@@ -165,20 +180,21 @@ mod tests {
     use super::*;
 
     #[test]
-    fn test_record_change_no_sqlite_block() {
-        let tunnel = DatabaseTunnel::new(":memory:").unwrap();
+    fn test_record_change_no_sqlite_block() -> anyhow::Result<()> {
+        let tunnel = DatabaseTunnel::new(":memory:")?;
         let record = ChangeRecord {
             id: 1,
             timestamp: 0,
             operation: "INSERT".to_string(),
             table: "test".to_string(),
             row_id: 42,
-            old_hash: vec![],
-            new_hash: vec![],
-            signature: vec![],
+            old_hash: vec![0u8; 32],
+            new_hash: vec![0u8; 32],
+            signature: vec![0u8; 32],
         };
-        let root = tunnel.record_change(record, true).unwrap();
+        let root = tunnel.record_change(record, true)?;
         assert_eq!(root.len(), 32);
-        assert!(tunnel.verify_integrity().unwrap());
+        assert!(tunnel.verify_integrity()?);
+        Ok(())
     }
 }

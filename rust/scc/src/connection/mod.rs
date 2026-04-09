@@ -1,2 +1,2 @@
 mod manager;
-pub use manager::ConnectionManager;
+pub use manager::{ConnectionManager, IncomingMessage};

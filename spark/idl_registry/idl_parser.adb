@@ -3,6 +3,9 @@ with IDL_Types;
 with System;
 
 package body IDL_Parser is
+   --  SPARK_Mode (Off): Uses dynamic allocation (new, access types)
+   --  which cannot be formally verified by SPARK.
+   pragma SPARK_Mode (Off);
    use type Interfaces.C.int;
    use type Interfaces.C.size_t;
    use type System.Address;

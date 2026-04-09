@@ -29,8 +29,14 @@ impl HealthSnapshot {
     /// Tính toán hash của snapshot (bỏ qua trường hash hiện tại).
     pub fn compute_hash(&self) -> Vec<u8> {
         let mut snapshot_copy = self.clone();
-        snapshot_copy.hash = vec![];
-        let bytes = bincode::serialize(&snapshot_copy).unwrap_or_default();
+        snapshot_copy.hash = vec![0u8; 32];
+        let bytes = match bincode::serialize(&snapshot_copy) {
+            Ok(b) => b,
+            Err(e) => {
+                tracing::error!("Failed to serialize snapshot for hash computation: {e}");
+                return vec![0u8; 32];
+            }
+        };
         Sha256::digest(&bytes).to_vec()
     }
 

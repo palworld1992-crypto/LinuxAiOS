@@ -1,3 +1,4 @@
+#[derive(Debug, PartialEq)]
 pub struct CapabilityToken;
 
 impl Default for CapabilityToken {

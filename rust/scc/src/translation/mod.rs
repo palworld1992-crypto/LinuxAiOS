@@ -1,5 +1,4 @@
-mod engine;
-pub use engine::TranslationEngine;
-
+pub mod engine;
 pub use engine::ShmHandle;
+pub use engine::TranslationEngine;
 pub use engine::TranslationError;

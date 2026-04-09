@@ -44,6 +44,8 @@ half = { version = "=2.4.1", features = ["rand_distr", "num-traits"] }
 candle-core = "=0.7.2"
 candle-nn = "=0.7.2"
 candle-onnx = "=0.7.2"
+candle-transformers = "=0.7.2"
+tokenizers = "0.15"
 
 # Các thư viện phổ biến khác (tùy chọn đưa vào đây để quản lý tập trung)
 tokio = { version = "1.0", features = ["full"] }
@@ -59,3 +61,17 @@ libfuzzer-sys = "0.4"
 
 [profile.dev]
 opt-level = 0
+# ============================================================================
+# Lints – Tuân thủ quy tắc cấm unwrap, expect, allow, print, unwrap_or, v.v.
+# ============================================================================
+[workspace.lints.rust]
+unused = "deny"
+unused_must_use = "deny"
+
+[workspace.lints.clippy]
+unwrap_used = "deny"
+expect_used = "deny"
+print_stdout = "deny"
+print_stderr = "deny"
+todo = "deny"
+or_fun_call = "deny"   # Cấm unwrap_or(f()) – nhưng không bắt unwrap_or(0)

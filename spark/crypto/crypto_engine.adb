@@ -22,15 +22,6 @@ package body Crypto_Engine is
    Dilithium_Name_Str : constant String := "ML-DSA-65" & ASCII.NUL;
 
    --------------------------------------------------------------------
-   -- Import quản lý bộ nhớ từ thư viện C chuẩn
-   --------------------------------------------------------------------
-   procedure C_Free (Ptr : System.Address)
-     with Import, Convention => C, External_Name => "free";
-
-   function C_Malloc (Size : Interfaces.C.size_t) return System.Address
-     with Import, Convention => C, External_Name => "malloc";
-
-   --------------------------------------------------------------------
    -- Định nghĩa cấu trúc OSSL_PARAM (Bắt buộc cho OpenSSL 3.x)
    --------------------------------------------------------------------
    type OSSL_PARAM is record
@@ -119,6 +110,10 @@ package body Crypto_Engine is
    --------------------------------------------------------------------
    -- Import liboqs (Post-Quantum)
    --------------------------------------------------------------------
+   -- [Initialization]
+   procedure OQS_init
+     with Import, Convention => C, External_Name => "OQS_init";
+
    -- [KEM]
    function OQS_KEM_new (alg_name : Interfaces.C.Strings.chars_ptr) return System.Address
      with Import, Convention => C, External_Name => "OQS_KEM_new";
@@ -135,7 +130,7 @@ package body Crypto_Engine is
    procedure OQS_KEM_free (kem : System.Address)
      with Import, Convention => C, External_Name => "OQS_KEM_free";
 
-   -- [SIG]
+   -- [SIG] - Generic API
    function OQS_SIG_new (alg_name : Interfaces.C.Strings.chars_ptr) return System.Address
      with Import, Convention => C, External_Name => "OQS_SIG_new";
 
@@ -154,28 +149,63 @@ package body Crypto_Engine is
    procedure OQS_SIG_free (sig : System.Address)
      with Import, Convention => C, External_Name => "OQS_SIG_free";
 
+   -- [SIG] - ML-DSA-65 specific (preferred for stability)
+   function OQS_SIG_ml_dsa_65_new return System.Address
+     with Import, Convention => C, External_Name => "OQS_SIG_ml_dsa_65_new";
+
+   function OQS_SIG_ml_dsa_65_keypair (public_key : System.Address; secret_key : System.Address) return Interfaces.C.int
+     with Import, Convention => C, External_Name => "OQS_SIG_ml_dsa_65_keypair";
+
+   function OQS_SIG_ml_dsa_65_sign (signature : System.Address; signature_len : System.Address;
+                                    message : System.Address; message_len : Interfaces.C.size_t;
+                                    secret_key : System.Address) return Interfaces.C.int
+     with Import, Convention => C, External_Name => "OQS_SIG_ml_dsa_65_sign";
+
+   -- Use void function with out parameter for better Ada compatibility
+   procedure OQS_ML_DSA_65_Verify_Out (message : System.Address; message_len : Interfaces.C.size_t;
+                                        signature : System.Address; signature_len : Interfaces.C.size_t;
+                                        public_key : System.Address;
+                                        status : out Interfaces.C.int)
+     with Import, Convention => C, External_Name => "oqs_ml_dsa_65_verify_wrapper_out";
+
+   -- Library initialization flag
+   OQS_Initialized : Boolean := False with Atomic;
+
+   --------------------------------------------------------------------
+   -- Initialization (called once before any OQS operation)
+   --------------------------------------------------------------------
+   procedure Ensure_OQS_Initialized is
+   begin
+      if not OQS_Initialized then
+         OQS_init;
+         OQS_Initialized := True;
+      end if;
+   end Ensure_OQS_Initialized;
+
    --------------------------------------------------------------------
    -- Khai báo các Subunits (separate)
    --------------------------------------------------------------------
    procedure AES_GCM_Encrypt
-     (Key            : Key_32;
-      Plaintext      : System.Address;
-      Plaintext_Len  : Interfaces.C.size_t;
-      AAD            : System.Address;
-      AAD_Len        : Interfaces.C.size_t;
-      Ciphertext_Out : out System.Address;
-      Ciphertext_Len : out Interfaces.C.size_t;
-      Status         : out Interfaces.C.int) is separate;
+     (Key             : Key_32;
+      Plaintext       : System.Address;
+      Plaintext_Len   : Interfaces.C.size_t;
+      AAD             : System.Address;
+      AAD_Len         : Interfaces.C.size_t;
+      Ciphertext_Buf  : System.Address;
+      Ciphertext_Buf_Size : Interfaces.C.size_t;
+      Ciphertext_Len  : out Interfaces.C.size_t;
+      Status          : out Interfaces.C.int) is separate;
 
    procedure AES_GCM_Decrypt
-     (Key            : Key_32;
-      Ciphertext     : System.Address;
-      Ciphertext_Len : Interfaces.C.size_t;
-      AAD            : System.Address;
-      AAD_Len        : Interfaces.C.size_t;
-      Plaintext_Out  : out System.Address;
-      Plaintext_Len  : out Interfaces.C.size_t;
-      Status         : out Interfaces.C.int) is separate;
+     (Key             : Key_32;
+      Ciphertext      : System.Address;
+      Ciphertext_Len  : Interfaces.C.size_t;
+      AAD             : System.Address;
+      AAD_Len         : Interfaces.C.size_t;
+      Plaintext_Buf   : System.Address;
+      Plaintext_Buf_Size : Interfaces.C.size_t;
+      Plaintext_Len   : out Interfaces.C.size_t;
+      Status          : out Interfaces.C.int) is separate;
 
    procedure HMAC_SHA256
      (Key      : Key_32;
@@ -202,24 +232,25 @@ package body Crypto_Engine is
       Status        : out Interfaces.C.int) is separate;
 
    procedure Dilithium_Keypair
-     (Public_Key : out Key_1952;
-      Secret_Key : out Key_4032;
-      Status     : out Interfaces.C.int) is separate;
+     (Public_Key  : System.Address;
+      Secret_Key  : System.Address;
+      Status      : out Interfaces.C.int) is separate;
 
    procedure Dilithium_Sign
-     (Secret_Key   : Key_4032;
-      Message      : System.Address;
-      Message_Len  : Interfaces.C.size_t;
-      Signature    : out Key_3309;
-      Status       : out Interfaces.C.int) is separate;
+     (Secret_Key     : System.Address;
+      Message        : System.Address;
+      Message_Len    : Interfaces.C.size_t;
+      Signature_Buf  : System.Address;
+      Signature_Buf_Size : Interfaces.C.size_t;
+      Signature_Len_Ptr : System.Address;
+      Status         : out Interfaces.C.int) is separate;
 
    procedure Dilithium_Verify
-     (Public_Key   : Key_1952;
+     (Public_Key   : System.Address;
       Message      : System.Address;
       Message_Len  : Interfaces.C.size_t;
-      Signature    : Key_3309;
-      Status       : out Interfaces.C.int) is separate;
-
-   procedure Crypto_Free_Buffer (Ptr : System.Address) is separate;
+      Signature    : System.Address;
+      Signature_Len : Interfaces.C.size_t;
+      Status_Ptr   : System.Address) is separate;
 
 end Crypto_Engine;

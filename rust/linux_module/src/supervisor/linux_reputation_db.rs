@@ -149,12 +149,12 @@ impl ReputationDatabase {
         entry.last_update = now;
 
         let rec = entry.clone();
-        drop(entry); // Giải phóng lock DashMap ngay lập tức
+        drop(entry);
 
         // Gửi dữ liệu cho worker ghi file (Async)
-        if let Err(e) = self.tx.send(rec) {
-            error!("Không thể gửi cập nhật đến SQL worker: {}", e);
-        }
+        self.tx
+            .send(rec)
+            .map_err(|e| anyhow::anyhow!("Failed to send update to SQL worker: {}", e))?;
 
         Ok(())
     }
