@@ -52,5 +52,5 @@
     "terminal.integrated.cwd": "${workspaceFolder}",
     // Tự động định dạng code khi lưu cho dự án hệ thống
     "editor.formatOnSave": true,
-    "cmake.sourceDirectory": "/root/aios/browser_module"
+    "cmake.sourceDirectory": "/home/ToHung/LinusAiOS/browser_module"
 }
